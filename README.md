@@ -1,34 +1,69 @@
 # Optimizador de Energía y Undervolt NVIDIA (Linux)
 
-Herramienta gráfica (GUI) nativa para Linux desarrollada con **Python y GTK3** para optimizar el consumo eléctrico, temperatura y rendimiento de tarjetas gráficas **NVIDIA** (especialmente optimizado para la **GTX 1660** y arquitecturas Turing / Pascal / Ampere).
+Herramienta gráfica (GUI) nativa para Linux desarrollada con **Python y GTK3** para optimizar el consumo eléctrico, temperatura y rendimiento de tarjetas gráficas **NVIDIA**.
 
-En Linux, el controlador propietario de NVIDIA no permite editar la curva de voltajes tradicional de Windows. Esta herramienta aplica la técnica estándar y más efectiva en Linux: **control dinámico de Power Limit, bloqueo de frecuencias óptimas (Clock Locking) y gestión de PowerMizer**.
+Detecta automáticamente la GPU instalada y calcula los perfiles óptimos de consumo según el TDP real del hardware. Compatible con cualquier PC Linux que tenga el driver propietario NVIDIA.
 
 ---
 
-## 🚀 Perfiles Incluidos
+## 🔍 Detección Automática de GPU
 
-| Perfil | Límite Potencia | Reloj Núcleo | Reloj VRAM | Uso recomendado |
-| :--- | :---: | :---: | :---: | :--- |
-| **🌱 Modo Ultra Eco** | **70 W** | 300 - 650 MHz | ~405 MHz | Máximo ahorro para YouTube, Netflix, ofimática y tareas ligeras (~12W - 16W reales). |
-| **🍃 Máxima Eficiencia** | **80 W** | Dinámico | 4001 MHz | Gaming fluido ahorrando 35% de consumo sin pérdida perceptible de FPS. |
-| **⚡ Punto Dulce** | **90 W** | Dinámico | 4001 MHz | Exprimir el 98% del rendimiento en juegos exigentes con -25% de consumo. |
-| **⚙️ De Fábrica (Stock)** | **120 W** | Fábrica | 4001 MHz | Restaura los valores de fábrica originales sin límites. |
+La herramienta consulta `nvidia-smi` al arrancar para leer las capacidades reales de tu GPU:
+
+- **Nombre del modelo** → mostrado en la cabecera de la app.
+- **TDP mínimo y máximo** → calcula perfiles como porcentaje del TDP real.
+- **Relojes máximos** → configura el límite de reloj del modo Eco apropiado.
+- **Soporte de power management** → si el driver no permite cambiar el TDP (GPUs móviles), solo controla el modo PowerMizer.
+
+### GPUs con soporte garantizado
+
+| GPU | TDP | Perfiles | Tipo |
+|:---|:---:|:---:|:---:|
+| NVIDIA GeForce GTX 1660 / Ti / Super | 120–125 W | 4 perfiles | Escritorio |
+| NVIDIA GeForce GTX 1060 6G / 3G | 120 W | 4 perfiles | Escritorio |
+| NVIDIA GeForce RTX 5060 Ti 16G | 180 W | 4 perfiles | Escritorio |
+| NVIDIA GeForce GT 840M | 33 W | 3 modos PowerMizer | Portátil |
+| **Cualquier otra GPU NVIDIA** | Detectado | Calculado | Auto |
+
+---
+
+## 🚀 Perfiles de Consumo (adaptados automáticamente)
+
+Los perfiles se calculan como **porcentajes del TDP real** de la GPU detectada:
+
+| Perfil | % TDP | GTX 1660 (120W) | RTX 5060 Ti (180W) | Uso recomendado |
+|:---|:---:|:---:|:---:|:---|
+| 🌱 **Ultra Eco** | ~58% | 70 W | 105 W | Máximo ahorro: YouTube, ofimática, escritorio |
+| 🍃 **Máxima Eficiencia** | ~67% | 80 W | 120 W | Gaming sin pérdida perceptible de FPS |
+| ⚡ **Punto Dulce** | ~75% | 90 W | 135 W | ~98% rendimiento con -25% de consumo |
+| ⚙️ **De Fábrica (Stock)** | 100% | 120 W | 180 W | Sin restricciones, valores originales |
+
+> El modo **Ultra Eco** también bloquea el reloj del núcleo (ej. 650 MHz en GTX 1660, 800 MHz en RTX 5060 Ti) para minimizar el consumo en tareas ligeras.
+
+### GPUs móviles (portátil)
+
+Las GPUs de portátil (como la GT 840M) no permiten cambiar el TDP vía `nvidia-smi`. Para estas GPUs se ofrecen 3 modos **PowerMizer**:
+
+| Modo | Descripción |
+|:---|:---|
+| 🌱 Ahorro de Energía | PowerMizer Adaptativo — baja frecuencias en reposo |
+| 🍃 Equilibrado | PowerMizer Automático — el driver decide |
+| ⚡ Máximo Rendimiento | PowerMizer Máximo — frecuencias siempre al tope |
 
 ---
 
 ## ✨ Características
 
-* **Interfaz gráfica moderna:** Integrada de forma nativa con el tema de escritorio GTK (Cinnamon, GNOME, XFCE, MATE).
-* **Monitor en tiempo real:** Lectura en vivo de vatios actuales, temperatura, porcentaje de uso, reloj del núcleo y reloj de la memoria VRAM.
-* **Persistencia en el arranque (Daemon / Systemd):** Permite marcar una casilla para que el perfil elegido se aplique automáticamente cada vez que enciendas el ordenador mediante un servicio ultraligero de `systemd`.
-* **Cero consumo en segundo plano:** La aplicación y el servicio no quedan residentes en memoria gastando recursos.
+* **Detección automática:** Funciona con cualquier GPU NVIDIA sin configuración manual.
+* **Multi-GPU:** Si tienes varias GPUs NVIDIA, puedes elegir cuál configurar desde la propia app.
+* **Interfaz gráfica moderna:** Integrada de forma nativa con el tema GTK (Cinnamon, GNOME, XFCE, MATE).
+* **Monitor en tiempo real:** Lectura en vivo de vatios, temperatura, uso, reloj del núcleo y de la VRAM.
+* **Persistencia en el arranque:** Servicio `systemd` ultraligero por GPU para aplicar el perfil automáticamente en cada arranque.
+* **Cero consumo en segundo plano:** La app y el servicio no quedan residentes en memoria.
 
 ---
 
 ## 📦 Instalación Rápida
-
-Solo necesitas clonar el repositorio y ejecutar el instalador:
 
 ```bash
 git clone https://github.com/alejandroasc96/gpu-undervolt.git
@@ -39,14 +74,12 @@ chmod +x install.sh
 
 El instalador automáticamente:
 1. Instalará la aplicación en `~/.local/share/nvidia-optimizer/`.
-2. Creará el acceso directo con icono oficial en tu **Escritorio** (`~/Desktop` o `~/Escritorio`).
+2. Creará el acceso directo con icono oficial en tu **Escritorio**.
 3. Lo añadirá a tu **Menú de Aplicaciones**.
 
 ---
 
 ## 🗑️ Desinstalación
-
-Para eliminar la aplicación y sus accesos directos por completo:
 
 ```bash
 chmod +x uninstall.sh
@@ -58,5 +91,18 @@ chmod +x uninstall.sh
 ## 📋 Requisitos del Sistema
 
 * Distribución Linux (Linux Mint, Ubuntu, Debian o derivadas).
-* Controlador propietario oficial de NVIDIA instalado (`nvidia-driver`).
-* `python3`, `python3-gi`, `gir1.2-gtk-3.0` y `zenity` (instalados por defecto en Linux Mint y Ubuntu).
+* Driver propietario oficial de NVIDIA instalado (`nvidia-driver`).
+* `python3`, `python3-gi`, `gir1.2-gtk-3.0` (instalados por defecto en Linux Mint y Ubuntu).
+* `zenity` (fallback de autenticación, preinstalado en la mayoría de entornos GNOME/GTK).
+
+---
+
+## 🛠️ Prueba rápida del detector
+
+Puedes comprobar qué detecta el sistema en tu PC sin abrir la GUI:
+
+```bash
+python3 gpu_detector.py
+```
+
+Mostrará el modelo de GPU, rango de TDP, relojes máximos y los perfiles calculados para tu hardware.

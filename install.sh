@@ -2,17 +2,18 @@
 set -e
 
 echo "=================================================="
-echo " Instalador: Optimizador de Energía NVIDIA (Linux)"
+echo " Instalador: Optimizador de Energia NVIDIA (Linux)"
 echo "=================================================="
 
 # 1. Verificar dependencias requeridas
 MISSING_DEPS=""
 command -v nvidia-smi >/dev/null 2>&1 || MISSING_DEPS="$MISSING_DEPS nvidia-smi"
-command -v python3 >/dev/null 2>&1 || MISSING_DEPS="$MISSING_DEPS python3"
-python3 -c "import gi; gi.require_version('Gtk', '3.0')" 2>/dev/null || MISSING_DEPS="$MISSING_DEPS python3-gi (PyGObject)"
+command -v python3 >/dev/null 2>&1    || MISSING_DEPS="$MISSING_DEPS python3"
+python3 -c "import gi; gi.require_version('Gtk', '3.0')" 2>/dev/null \
+    || MISSING_DEPS="$MISSING_DEPS python3-gi (PyGObject)"
 
 if [ -n "$MISSING_DEPS" ]; then
-    echo "⚠️ Faltan dependencias en tu sistema:"
+    echo "Faltan dependencias en tu sistema:"
     echo "$MISSING_DEPS"
     echo "Puedes instalarlas con: sudo apt install python3 python3-gi gir1.2-gtk-3.0"
     exit 1
@@ -36,24 +37,25 @@ fi
 mkdir -p "$APP_DIR"
 mkdir -p "$APPS_MENU_DIR"
 
-# 3. Copiar scripts y otorgar permisos
+# 3. Copiar archivos y otorgar permisos
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "➡️ Copiando archivos del optimizador a $APP_DIR..."
-cp "$SCRIPT_DIR/gui.py" "$APP_DIR/"
-cp "$SCRIPT_DIR/apply.sh" "$APP_DIR/"
+echo "Copiando archivos del optimizador a $APP_DIR..."
+cp "$SCRIPT_DIR/gui.py"          "$APP_DIR/"
+cp "$SCRIPT_DIR/apply.sh"        "$APP_DIR/"
+cp "$SCRIPT_DIR/gpu_detector.py" "$APP_DIR/"
 chmod +x "$APP_DIR/gui.py"
 chmod +x "$APP_DIR/apply.sh"
 
 # 4. Crear el archivo .desktop para el escritorio
 DESKTOP_FILE="$DESKTOP_DIR/nvidia-optimizer.desktop"
-echo "➡️ Creando acceso directo en el Escritorio ($DESKTOP_FILE)..."
+echo "Creando acceso directo en el Escritorio ($DESKTOP_FILE)..."
 
-cat <<EOF > "$DESKTOP_FILE"
+cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Type=Application
-Name=Optimizador GTX 1660
-Comment=Configura perfiles de consumo (Ultra Eco, Máxima Eficiencia, Punto Dulce) y persistencia en arranque
+Name=Optimizador NVIDIA
+Comment=Configura perfiles de consumo para GPUs NVIDIA (Ultra Eco, Maximo Rendimiento, etc.) con deteccion automatica de hardware
 Exec=$APP_DIR/gui.py
 Icon=nvidia-settings
 Terminal=false
@@ -63,16 +65,16 @@ EOF
 
 chmod +x "$DESKTOP_FILE"
 
-# Marcar como confiable en Cinnamon/Nemo si gio está presente
+# Marcar como confiable en Cinnamon/Nemo si gio esta presente
 if command -v gio >/dev/null 2>&1; then
     gio set -t string "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
 fi
 
-# 5. Instalar también en el menú de aplicaciones del sistema
+# 5. Instalar tambien en el menu de aplicaciones del sistema
 cp "$DESKTOP_FILE" "$APPS_MENU_DIR/"
 
 echo "=================================================="
-echo "✅ ¡Instalación completada con éxito!"
-echo "➡️ Acceso directo creado en: $DESKTOP_FILE"
-echo "➡️ Disponible también en el Menú de Aplicaciones."
+echo "Instalacion completada con exito!"
+echo "Acceso directo creado en: $DESKTOP_FILE"
+echo "Disponible tambien en el Menu de Aplicaciones."
 echo "=================================================="

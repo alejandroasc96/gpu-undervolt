@@ -56,8 +56,15 @@ Las GPUs de portátil (como la GT 840M) no permiten cambiar el TDP vía `nvidia-
 
 * **Detección automática:** Funciona con cualquier GPU NVIDIA sin configuración manual.
 * **Multi-GPU:** Si tienes varias GPUs NVIDIA, puedes elegir cuál configurar desde la propia app.
-* **Interfaz gráfica moderna:** Integrada de forma nativa con el tema GTK (Cinnamon, GNOME, XFCE, MATE).
-* **Monitor en tiempo real:** Lectura en vivo de vatios, temperatura, uso, reloj del núcleo y de la VRAM.
+* **Pestaña Utils (Limpieza de Disco):** Suite de herramientas para recuperar espacio del sistema:
+  - Limpieza de caché de paquetes (`apt clean`).
+  - Desinstalación de dependencias huérfanas (`apt autoremove --purge`).
+  - Reducción y aspirado de registros del sistema (`journalctl --vacuum-size=100M` y `7d`).
+  - Limpieza de runtimes Flatpak huérfanos (`flatpak uninstall --unused`).
+  - Limpieza de miniaturas (`~/.cache/thumbnails`) y papelera de reciclaje.
+  - Estimación y análisis de espacio recuperable antes de limpiar.
+* **Interfaz gráfica moderna con pestañas:** Conmutación entre GPU y Utils integrada en GTK3.
+* **Monitor en tiempo real:** Lectura en vivo de GPU y monitor de uso de disco en `/`.
 * **Persistencia en el arranque:** Servicio `systemd` ultraligero por GPU para aplicar el perfil automáticamente en cada arranque.
 * **Cero consumo en segundo plano:** La app y el servicio no quedan residentes en memoria.
 

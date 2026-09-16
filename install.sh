@@ -44,8 +44,10 @@ echo "Copiando archivos del optimizador a $APP_DIR..."
 cp "$SCRIPT_DIR/gui.py"          "$APP_DIR/"
 cp "$SCRIPT_DIR/apply.sh"        "$APP_DIR/"
 cp "$SCRIPT_DIR/gpu_detector.py" "$APP_DIR/"
+cp "$SCRIPT_DIR/disk_cleaner.py" "$APP_DIR/"
 chmod +x "$APP_DIR/gui.py"
 chmod +x "$APP_DIR/apply.sh"
+chmod +x "$APP_DIR/disk_cleaner.py"
 
 # 4. Crear el archivo .desktop para el escritorio
 DESKTOP_FILE="$DESKTOP_DIR/nvidia-optimizer.desktop"

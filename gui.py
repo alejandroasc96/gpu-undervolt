@@ -535,6 +535,22 @@ class NvidiaOptimizerApp(Gtk.Window):
         self.disk_progress.set_fraction(0.0)
         disk_box.pack_start(self.disk_progress, False, False, 0)
 
+        # Fila de optimización TRIM para SSD
+        trim_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        trim_row.set_margin_top(4)
+
+        trim_info = Gtk.Label()
+        trim_info.set_markup("<small><span color='#555'>Mantenimiento SSD: libera bloques físicos no utilizados para preservar velocidad y vida útil.</span></small>")
+        trim_info.set_xalign(0)
+        trim_row.pack_start(trim_info, True, True, 0)
+
+        self.trim_btn = Gtk.Button(label=" ⚡ Optimizar SSD (TRIM) ")
+        self.trim_btn.set_tooltip_text("Ejecuta fstrim para recortar bloques no usados en el SSD (requiere root)")
+        self.trim_btn.connect("clicked", self._on_trim_clicked)
+        trim_row.pack_end(self.trim_btn, False, False, 0)
+
+        disk_box.pack_start(trim_row, False, False, 0)
+
         disk_frame.add(disk_box)
         vbox.pack_start(disk_frame, False, False, 0)
 
@@ -890,6 +906,75 @@ class NvidiaOptimizerApp(Gtk.Window):
             GLib.idle_add(on_finish)
 
         threading.Thread(target=clean_worker, daemon=True).start()
+
+    def _on_trim_clicked(self, widget):
+        confirm_dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text="¿Deseas optimizar las celdas del disco SSD (TRIM)?"
+        )
+        confirm_dialog.format_secondary_text(
+            "La operación fstrim informará al controlador de tu unidad de estado sólido (SSD) "
+            "cuáles bloques de datos ya no se usan, mejorando la velocidad de escritura y prolongando "
+            "la vida útil del dispositivo.\n\n"
+            "Se solicitarán permisos de administrador para ejecutar la orden."
+        )
+        response = confirm_dialog.run()
+        confirm_dialog.destroy()
+
+        if response != Gtk.ResponseType.YES:
+            return
+
+        self.trim_btn.set_sensitive(False)
+        self.log_expander.set_expanded(True)
+        self._append_log("\n=== INICIANDO OPTIMIZACIÓN SSD (TRIM) ===")
+
+        def trim_worker():
+            script = self.disk_cleaner.build_trim_script()
+            ok, output = self._execute_root_script(script)
+
+            def on_finish():
+                self.trim_btn.set_sensitive(True)
+                for line in output.splitlines():
+                    self._append_log(line)
+                self._refresh_disk_info()
+
+                if ok:
+                    summary = ""
+                    for line in output.splitlines():
+                        if "bytes" in line or "recortados" in line or "trimmed" in line or "/" in line:
+                            summary += line.strip() + "\n"
+                    if not summary.strip():
+                        summary = "Operación completada correctamente."
+
+                    dlg = Gtk.MessageDialog(
+                        transient_for=self,
+                        flags=0,
+                        message_type=Gtk.MessageType.INFO,
+                        buttons=Gtk.ButtonsType.OK,
+                        text="¡Optimización SSD (TRIM) completada!",
+                    )
+                    dlg.format_secondary_text(f"Resultado:\n{summary}")
+                    dlg.run()
+                    dlg.destroy()
+                else:
+                    if "cancelada" not in output.lower():
+                        dlg = Gtk.MessageDialog(
+                            transient_for=self,
+                            flags=0,
+                            message_type=Gtk.MessageType.ERROR,
+                            buttons=Gtk.ButtonsType.OK,
+                            text="Error al ejecutar fstrim",
+                        )
+                        dlg.format_secondary_text(output)
+                        dlg.run()
+                        dlg.destroy()
+
+            GLib.idle_add(on_finish)
+
+        threading.Thread(target=trim_worker, daemon=True).start()
 
 
 if __name__ == "__main__":

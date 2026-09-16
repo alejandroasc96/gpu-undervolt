@@ -56,13 +56,17 @@ Las GPUs de portátil (como la GT 840M) no permiten cambiar el TDP vía `nvidia-
 
 * **Detección automática:** Funciona con cualquier GPU NVIDIA sin configuración manual.
 * **Multi-GPU:** Si tienes varias GPUs NVIDIA, puedes elegir cuál configurar desde la propia app.
-* **Pestaña Utils (Limpieza de Disco):** Suite de herramientas para recuperar espacio del sistema:
-  - Limpieza de caché de paquetes (`apt clean`).
-  - Desinstalación de dependencias huérfanas (`apt autoremove --purge`).
-  - Reducción y aspirado de registros del sistema (`journalctl --vacuum-size=100M` y `7d`).
-  - Limpieza de runtimes Flatpak huérfanos (`flatpak uninstall --unused`).
-  - Limpieza de miniaturas (`~/.cache/thumbnails`) y papelera de reciclaje.
-  - Estimación y análisis de espacio recuperable antes de limpiar.
+* **Pestaña Utils (Limpieza y Optimización SSD):** Suite integral para recuperar espacio y mantener la salud del disco:
+  - **Optimización física SSD (TRIM):** Botón `fstrim` para recortar bloques libres, mejorando la velocidad de escritura y vida útil del SSD.
+  - **Caché de Shaders de Steam y GPU NVIDIA:** Limpieza de `shadercache` y `GLCache` (libera gigabytes de juegos sin afectar rendimiento).
+  - **Caché de Navegadores Web:** Limpieza segura de archivos temporales de Firefox, Chrome, Chromium y Brave.
+  - **Reportes de fallos y volcados (Core Dumps):** Limpieza de `/var/crash/` y volcados de `coredumpctl`.
+  - **Limpieza de caché de paquetes:** Eliminación de paquetes `.deb` descargados (`apt clean`).
+  - **Desinstalación de dependencias huérfanas:** `apt autoremove --purge`.
+  - **Reducción de registros del sistema:** `journalctl --vacuum-size=100M` y `7d`.
+  - **Runtimes Flatpak huérfanos:** `flatpak uninstall --unused`.
+  - **Miniaturas y Papelera:** Vaciado de `~/.cache/thumbnails` y papelera.
+  - **Análisis previo de espacio:** Estimación en vivo del espacio recuperable antes de aplicar cambios.
 * **Interfaz gráfica moderna con pestañas:** Conmutación entre GPU y Utils integrada en GTK3.
 * **Monitor en tiempo real:** Lectura en vivo de GPU y monitor de uso de disco en `/`.
 * **Persistencia en el arranque:** Servicio `systemd` ultraligero por GPU para aplicar el perfil automáticamente en cada arranque.

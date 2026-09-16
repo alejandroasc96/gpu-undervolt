@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Módulo de Utilidades de Disco y Limpieza de Sistema (Linux)
-Proporciona análisis de almacenamiento y comandos seguros de optimización de espacio.
+Módulo de Utilidades de Disco, SSD y Limpieza de Sistema (Linux)
+Proporciona análisis de almacenamiento, comandos seguros de optimización de espacio y soporte TRIM para SSDs.
 """
 import os
 import sys
@@ -40,6 +40,23 @@ def get_dir_size(path: str) -> int:
     except (OSError, PermissionError):
         pass
     return total
+
+
+def purge_directory_contents(path: str) -> bool:
+    """Elimina todo el contenido dentro de una carpeta sin borrar la carpeta raíz."""
+    if not os.path.exists(path):
+        return True
+    success = True
+    for item in os.listdir(path):
+        item_path = os.path.join(path, item)
+        try:
+            if os.path.isdir(item_path) and not os.path.islink(item_path):
+                shutil.rmtree(item_path, ignore_errors=True)
+            else:
+                os.unlink(item_path)
+        except Exception:
+            success = False
+    return success
 
 
 class DiskInfo:
@@ -110,6 +127,7 @@ class DiskCleaner:
     def __init__(self):
         self.has_flatpak = shutil.which("flatpak") is not None
         self.has_apt = shutil.which("apt-get") is not None
+        self.has_fstrim = shutil.which("fstrim") is not None
 
     def get_tasks_definitions(self) -> List[CleanerTask]:
         """Define la lista de tareas de limpieza disponibles."""
@@ -139,6 +157,14 @@ class DiskCleaner:
             default_enabled=True
         ))
 
+        tasks.append(CleanerTask(
+            key="crash_reports",
+            title="Reportes de fallos y volcados (Core Dumps)",
+            description="Elimina informes de error en /var/crash y volcados de memoria de aplicaciones en /var/lib/systemd/coredump.",
+            requires_root=True,
+            default_enabled=True
+        ))
+
         if self.has_flatpak:
             tasks.append(CleanerTask(
                 key="flatpak_unused",
@@ -147,6 +173,22 @@ class DiskCleaner:
                 requires_root=True,
                 default_enabled=True
             ))
+
+        tasks.append(CleanerTask(
+            key="gpu_shaders",
+            title="Caché de Shaders de Steam y GPU NVIDIA",
+            description="Limpia precompilaciones de shaders en Steam y NVIDIA GLCache (se regeneran automáticamente al jugar).",
+            requires_root=False,
+            default_enabled=False
+        ))
+
+        tasks.append(CleanerTask(
+            key="browser_cache",
+            title="Caché de navegadores web",
+            description="Limpia archivos temporales de navegación en Firefox, Chrome, Chromium y Brave (no borra contraseñas ni historial).",
+            requires_root=False,
+            default_enabled=True
+        ))
 
         tasks.append(CleanerTask(
             key="thumbnails",
@@ -166,8 +208,8 @@ class DiskCleaner:
 
         tasks.append(CleanerTask(
             key="user_cache",
-            title="Cachés de usuario no esenciales",
-            description="Limpia cachés temporales de pip, npm y archivos residuales en ~/.cache.",
+            title="Cachés de desarrollo (pip, npm)",
+            description="Limpia cachés temporales de pip, npm y archivos residuales de compilación en ~/.cache.",
             requires_root=False,
             default_enabled=False
         ))
@@ -227,6 +269,10 @@ class DiskCleaner:
             except Exception:
                 size = 0
 
+        elif task_key == "crash_reports":
+            size += get_dir_size("/var/crash")
+            size += get_dir_size("/var/lib/systemd/coredump")
+
         elif task_key == "flatpak_unused":
             if self.has_flatpak:
                 try:
@@ -247,6 +293,28 @@ class DiskCleaner:
                                 pass
                 except Exception:
                     size = 0
+
+        elif task_key == "gpu_shaders":
+            # Steam shadercache
+            steam_shaders = os.path.expanduser("~/.local/share/Steam/steamapps/shadercache")
+            size += get_dir_size(steam_shaders)
+            # NVIDIA GLCache
+            nv_cache = os.path.expanduser("~/.nv/GLCache")
+            size += get_dir_size(nv_cache)
+            nv_cache2 = os.path.expanduser("~/.cache/nvidia/GLCache")
+            size += get_dir_size(nv_cache2)
+
+        elif task_key == "browser_cache":
+            # Firefox cache (solo cache en ~/.cache, no datos de perfil en ~/.mozilla)
+            ff_cache = os.path.expanduser("~/.cache/mozilla/firefox")
+            size += get_dir_size(ff_cache)
+            # Chrome / Chromium / Brave
+            chrome_cache = os.path.expanduser("~/.cache/google-chrome")
+            size += get_dir_size(chrome_cache)
+            chromium_cache = os.path.expanduser("~/.cache/chromium")
+            size += get_dir_size(chromium_cache)
+            brave_cache = os.path.expanduser("~/.cache/BraveSoftware")
+            size += get_dir_size(brave_cache)
 
         elif task_key == "thumbnails":
             thumb_dir = os.path.expanduser("~/.cache/thumbnails")
@@ -273,24 +341,47 @@ class DiskCleaner:
             thumb_dir = os.path.expanduser("~/.cache/thumbnails")
             if os.path.exists(thumb_dir):
                 logs.append("→ Limpiando miniaturas en ~/.cache/thumbnails...")
-                try:
-                    for root, dirs, files in os.walk(thumb_dir, topdown=False):
-                        for f in files:
-                            try:
-                                os.unlink(os.path.join(root, f))
-                            except Exception:
-                                pass
-                        for d in dirs:
-                            try:
-                                os.rmdir(os.path.join(root, d))
-                            except Exception:
-                                pass
+                if purge_directory_contents(thumb_dir):
                     logs.append("✓ Miniaturas eliminadas correctamente.")
-                except Exception as e:
-                    logs.append(f"✗ Error al limpiar miniaturas: {e}")
-                    success = False
+                else:
+                    logs.append("⚠ Algunas miniaturas no pudieron ser eliminadas.")
             else:
                 logs.append("• No existe la carpeta de miniaturas ~/.cache/thumbnails.")
+
+        if "gpu_shaders" in selected_keys:
+            logs.append("→ Limpiando caché de Shaders de Steam y GPU NVIDIA...")
+            shader_dirs = [
+                os.path.expanduser("~/.local/share/Steam/steamapps/shadercache"),
+                os.path.expanduser("~/.nv/GLCache"),
+                os.path.expanduser("~/.cache/nvidia/GLCache"),
+            ]
+            found = False
+            for sdir in shader_dirs:
+                if os.path.exists(sdir):
+                    found = True
+                    purge_directory_contents(sdir)
+            if found:
+                logs.append("✓ Caché de Shaders de juegos y GPU eliminada.")
+            else:
+                logs.append("• No se encontraron carpetas de shaders de Steam o NVIDIA.")
+
+        if "browser_cache" in selected_keys:
+            logs.append("→ Limpiando caché de navegadores web (Firefox/Chrome/Brave)...")
+            browser_dirs = [
+                os.path.expanduser("~/.cache/mozilla/firefox"),
+                os.path.expanduser("~/.cache/google-chrome"),
+                os.path.expanduser("~/.cache/chromium"),
+                os.path.expanduser("~/.cache/BraveSoftware"),
+            ]
+            cleaned_any = False
+            for bdir in browser_dirs:
+                if os.path.exists(bdir):
+                    cleaned_any = True
+                    purge_directory_contents(bdir)
+            if cleaned_any:
+                logs.append("✓ Caché de navegadores web limpiada con éxito.")
+            else:
+                logs.append("• No se detectaron carpetas de caché de navegadores.")
 
         if "trash" in selected_keys:
             logs.append("→ Vaciando papelera de reciclaje...")
@@ -309,15 +400,7 @@ class DiskCleaner:
                     for sub in ["files", "info"]:
                         sub_dir = os.path.join(trash_dir, sub)
                         if os.path.exists(sub_dir):
-                            for item in os.listdir(sub_dir):
-                                item_path = os.path.join(sub_dir, item)
-                                try:
-                                    if os.path.isdir(item_path) and not os.path.islink(item_path):
-                                        shutil.rmtree(item_path, ignore_errors=True)
-                                    else:
-                                        os.unlink(item_path)
-                                except Exception:
-                                    pass
+                            purge_directory_contents(sub_dir)
                     emptied = True
                 except Exception as e:
                     logs.append(f"✗ Error al vaciar papelera: {e}")
@@ -368,6 +451,15 @@ class DiskCleaner:
                 "echo '✓ Registros de journalctl reducidos.'"
             ])
 
+        if "crash_reports" in selected_keys:
+            cmds.extend([
+                "echo '→ Limpiando reportes de caídas y volcados coredump (/var/crash)...'",
+                "rm -rf /var/crash/* 2>/dev/null || true",
+                "if command -v coredumpctl >/dev/null 2>&1; then coredumpctl vacuum --size=1M 2>/dev/null || true; fi",
+                "rm -rf /var/lib/systemd/coredump/* 2>/dev/null || true",
+                "echo '✓ Reportes de fallos y volcados eliminados.'"
+            ])
+
         if "flatpak_unused" in selected_keys and self.has_flatpak:
             cmds.extend([
                 "echo '→ Desinstalando runtimes Flatpak sin usar (flatpak uninstall --unused)...'",
@@ -376,4 +468,27 @@ class DiskCleaner:
             ])
 
         cmds.append("echo '--- Limpieza del sistema finalizada ---'")
+        return "\n".join(cmds) + "\n"
+
+    def build_trim_script(self) -> str:
+        """Genera un script para recortar bloques no usados en unidades SSD (TRIM)."""
+        cmds = [
+            "#!/bin/bash",
+            "echo '=== Iniciando optimización TRIM para SSD ==='",
+            "echo 'Recortando bloques libres con fstrim...'",
+            "fstrim -v /",
+        ]
+        # Si /home está en otra partición, recortar también
+        home_path = os.path.expanduser("~")
+        try:
+            root_stat = os.stat("/")
+            home_stat = os.stat(home_path)
+            if root_stat.st_dev != home_stat.st_dev:
+                cmds.append(f"fstrim -v '{home_path}' || true")
+        except Exception:
+            pass
+
+        cmds.extend([
+            "echo '=== Optimización SSD (TRIM) completada con éxito ==='"
+        ])
         return "\n".join(cmds) + "\n"

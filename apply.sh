@@ -33,6 +33,38 @@ export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
 if [ "$WATTS" = "0" ]; then
     /usr/bin/nvidia-settings -a "[gpu:${GPU_INDEX}]/GPUPowerMizerMode=${POWERMIZER_MODE}" \
         >/dev/null 2>&1 || true
+
+    # Directorio autostart del usuario real (incluso si se invoca con sudo/pkexec)
+    TARGET_USER="${SUDO_USER:-$USER}"
+    if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
+        USER_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+    else
+        USER_HOME="$HOME"
+    fi
+
+    AUTOSTART_DIR="${USER_HOME}/.config/autostart"
+    AUTOSTART_FILE="${AUTOSTART_DIR}/nvidia-optimizer-powermizer-gpu${GPU_INDEX}.desktop"
+
+    if [ "$ENABLE_DAEMON" = "1" ] && [ "$POWERMIZER_MODE" != "2" ]; then
+        mkdir -p "$AUTOSTART_DIR"
+        cat > "$AUTOSTART_FILE" << EOF
+[Desktop Entry]
+Type=Application
+Name=NVIDIA PowerMizer GPU${GPU_INDEX}
+Exec=/usr/bin/nvidia-settings -a "[gpu:${GPU_INDEX}]/GPUPowerMizerMode=${POWERMIZER_MODE}"
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+Comment=Aplica el perfil de PowerMizer al iniciar sesion
+EOF
+        chmod +x "$AUTOSTART_FILE"
+        if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
+            chown "$TARGET_USER:$TARGET_USER" "$AUTOSTART_FILE" 2>/dev/null || true
+        fi
+    else
+        rm -f "$AUTOSTART_FILE" 2>/dev/null || true
+    fi
+
     echo "SUCCESS"
     exit 0
 fi

@@ -21,6 +21,7 @@ La herramienta consulta `nvidia-smi` al arrancar para leer las capacidades reale
 |:---|:---:|:---:|:---:|
 | NVIDIA GeForce GTX 1660 / Ti / Super | 120–125 W | 4 perfiles | Escritorio |
 | NVIDIA GeForce GTX 1060 6G / 3G | 120 W | 4 perfiles | Escritorio |
+| NVIDIA GeForce GTX 1060 Mobile / Max-Q | 80 W / 60 W | 3 modos PowerMizer | Portátil |
 | NVIDIA GeForce RTX 5060 Ti 16G | 180 W | 4 perfiles | Escritorio |
 | NVIDIA GeForce GT 840M | 33 W | 3 modos PowerMizer | Portátil |
 | **Cualquier otra GPU NVIDIA** | Detectado | Calculado | Auto |
@@ -42,13 +43,13 @@ Los perfiles se calculan como **porcentajes del TDP real** de la GPU detectada:
 
 ### GPUs móviles (portátil)
 
-Las GPUs de portátil (como la GT 840M) no permiten cambiar el TDP vía `nvidia-smi`. Para estas GPUs se ofrecen 3 modos **PowerMizer**:
+Las GPUs de portátil (como la GTX 1060 Mobile o GT 840M) no permiten cambiar el TDP en vatios vía `nvidia-smi`. Para estas GPUs se ofrecen 3 modos optimizados mediante **PowerMizer** manteniendo la misma coherencia que en escritorio:
 
 | Modo | Descripción |
 |:---|:---|
-| 🌱 Ahorro de Energía | PowerMizer Adaptativo — baja frecuencias en reposo |
-| 🍃 Equilibrado | PowerMizer Automático — el driver decide |
-| ⚡ Máximo Rendimiento | PowerMizer Máximo — frecuencias siempre al tope |
+| 🌱 **Ultra Eco** | PowerMizer Adaptativo — baja frecuencias a ~139 MHz en reposo para máximo ahorro y batería |
+| ⚡ **Punto Dulce** | PowerMizer Máximo Rendimiento (P0) — frecuencias sostenidas para evitar caídas de FPS en juegos |
+| ⚙️ **De Fábrica (Stock)** | PowerMizer Automático — restaura el comportamiento original del driver y elimina persistencia |
 
 ---
 

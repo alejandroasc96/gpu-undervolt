@@ -34,16 +34,33 @@ if [ "$WATTS" = "0" ]; then
     /usr/bin/nvidia-settings -a "[gpu:${GPU_INDEX}]/GPUPowerMizerMode=${POWERMIZER_MODE}" \
         >/dev/null 2>&1 || true
 
-    # Directorio autostart del usuario real (incluso si se invoca con sudo/pkexec)
-    TARGET_USER="${SUDO_USER:-$USER}"
-    if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
-        USER_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+    # Directorio autostart del usuario real (incluso si se invoca con sudo/pkexec).
+    # pkexec NO propaga SUDO_USER y deja $HOME en /root, pero define PKEXEC_UID
+    # con el uid del proceso que lo invoco; sudo -S define SUDO_UID/SUDO_USER.
+    TARGET_USER=""
+    if [ -n "${PKEXEC_UID}" ] && [ "${PKEXEC_UID}" != "0" ]; then
+        TARGET_USER="$(getent passwd "${PKEXEC_UID}" | cut -d: -f1)"
+    fi
+    if [ -z "${TARGET_USER}" ] && [ -n "${SUDO_UID}" ] && [ "${SUDO_UID}" != "0" ]; then
+        TARGET_USER="$(getent passwd "${SUDO_UID}" | cut -d: -f1)"
+    fi
+    if [ -z "${TARGET_USER}" ]; then
+        TARGET_USER="${SUDO_USER:-$USER}"
+    fi
+
+    if [ -n "${TARGET_USER}" ] && [ "${TARGET_USER}" != "root" ]; then
+        USER_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
     else
         USER_HOME="$HOME"
     fi
 
     AUTOSTART_DIR="${USER_HOME}/.config/autostart"
     AUTOSTART_FILE="${AUTOSTART_DIR}/nvidia-optimizer-powermizer-gpu${GPU_INDEX}.desktop"
+
+    # Limpiar la copia antigua que una version previa pudo escribir por error
+    # en el HOME de root al ejecutarse via pkexec (autostart inerte).
+    rm -f "/root/.config/autostart/nvidia-optimizer-powermizer-gpu${GPU_INDEX}.desktop" \
+        2>/dev/null || true
 
     if [ "$ENABLE_DAEMON" = "1" ] && [ "$POWERMIZER_MODE" != "2" ]; then
         mkdir -p "$AUTOSTART_DIR"

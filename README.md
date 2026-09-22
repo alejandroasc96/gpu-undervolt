@@ -59,7 +59,9 @@ Las GPUs de portátil (como la GTX 1060 Mobile o GT 840M) no permiten cambiar el
 * **Multi-GPU:** Si tienes varias GPUs NVIDIA, puedes elegir cuál configurar desde la propia app.
 * **Interfaz gráfica moderna:** Integrada de forma nativa con el tema GTK (Cinnamon, GNOME, XFCE, MATE).
 * **Monitor en tiempo real:** Lectura en vivo de vatios, temperatura, uso, reloj del núcleo y de la VRAM.
+* **Estado visible al abrir:** Indica el perfil de energía realmente aplicado (detectado del hardware) y si el daemon de arranque está activo.
 * **Persistencia en el arranque:** Servicio `systemd` ultraligero por GPU para aplicar el perfil automáticamente en cada arranque.
+* **Perfil De Fábrica sin redundancias:** Al aplicar «De Fábrica» el inicio automático se desactiva automáticamente (no tiene sentido persistirlo).
 * **Cero consumo en segundo plano:** La app y el servicio no quedan residentes en memoria.
 
 ---

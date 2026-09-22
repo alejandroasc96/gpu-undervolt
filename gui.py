@@ -1,44 +1,23 @@
 #!/usr/bin/env python3
 """
-Optimizador de Energia NVIDIA (Linux) - GUI
-Soporta cualquier GPU NVIDIA con deteccion automatica de perfiles.
+Optimizador de Energia NVIDIA & Utilidades del Sistema (Linux)
+Soporta optimizacion de GPUs NVIDIA (perfiles de consumo + daemon de arranque)
+y herramientas de limpieza de espacio en disco (pestana Utils).
 """
 import sys
 import os
 import re
 import subprocess
+import threading
+import tempfile
 from typing import Optional
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk, GLib, Pango
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 APPLY_SCRIPT = os.path.join(SCRIPT_DIR, "apply.sh")
-
-# Importar el modulo de deteccion
-sys.path.insert(0, SCRIPT_DIR)
-try:
-    from gpu_detector import (
-        detect_all_gpus,
-        detect_gpu,
-        check_nvidia_driver_status,
-        GpuInfo,
-        PowerProfile,
-    )
-except ImportError as e:
-    # Si falla el import, mostrar error y salir
-    import traceback
-    dialog = Gtk.MessageDialog(
-        flags=0,
-        message_type=Gtk.MessageType.ERROR,
-        buttons=Gtk.ButtonsType.OK,
-        text="Error al cargar gpu_detector.py"
-    )
-    dialog.format_secondary_text(str(e))
-    dialog.run()
-    sys.exit(1)
-
 
 # --- Almacenamiento de configuracion persistente -----------------------------
 CONFIG_DIR = os.path.expanduser("~/.config/nvidia-optimizer")
@@ -57,6 +36,8 @@ def _get_saved_profile(gpu_index: int) -> Optional[str]:
     return None
 
 def _save_profile(gpu_index: int, profile_name: str):
+    """Guarda siempre el perfil aplicado para poder informar de el al reabrir
+    la app, tenga o no inicio automatico."""
     os.makedirs(CONFIG_DIR, exist_ok=True)
     path = _get_saved_profile_path(gpu_index)
     try:
@@ -65,23 +46,65 @@ def _save_profile(gpu_index: int, profile_name: str):
     except Exception:
         pass
 
+# Importar modulos auxiliares
+sys.path.insert(0, SCRIPT_DIR)
+try:
+    from gpu_detector import (
+        detect_all_gpus,
+        check_nvidia_driver_status,
+        GpuInfo,
+        PowerProfile,
+    )
+except ImportError as e:
+    import traceback
+    dialog = Gtk.MessageDialog(
+        flags=0,
+        message_type=Gtk.MessageType.ERROR,
+        buttons=Gtk.ButtonsType.OK,
+        text="Error al cargar gpu_detector.py"
+    )
+    dialog.format_secondary_text(str(e))
+    dialog.run()
+    sys.exit(1)
+
+try:
+    from disk_cleaner import DiskCleaner, DiskInfo, format_size, CleanerTask
+except ImportError as e:
+    import traceback
+    dialog = Gtk.MessageDialog(
+        flags=0,
+        message_type=Gtk.MessageType.ERROR,
+        buttons=Gtk.ButtonsType.OK,
+        text="Error al cargar disk_cleaner.py"
+    )
+    dialog.format_secondary_text(str(e))
+    dialog.run()
+    sys.exit(1)
+
 
 class NvidiaOptimizerApp(Gtk.Window):
     def __init__(self):
-        super().__init__(title="Optimizador de Energia NVIDIA")
-        self.set_default_size(580, 680)
-        self.set_resizable(False)
+        super().__init__(title="Optimizador NVIDIA & Herramientas")
+        self.set_default_size(640, 720)
+        self.set_resizable(True)
         self.set_position(Gtk.WindowPosition.CENTER)
-        self.set_border_width(16)
+        self.set_border_width(12)
         self.set_icon_name("nvidia-settings")
 
-        # Estado interno
+        # Estado interno GPU
         self.gpus = []
         self.current_gpu = None
         self._profile_widgets = []
-        self.profile_radio_buttons = []  # lista de (RadioButton, PowerProfile)
+        self.profile_radio_buttons = []
+        self._initial_driver_err = None
 
-        # Comprobar salud del driver NVIDIA
+        # Estado interno Utils
+        self.disk_cleaner = DiskCleaner()
+        self.cleaner_tasks = self.disk_cleaner.get_tasks_definitions()
+        self.task_check_buttons = {}  # key -> Gtk.CheckButton
+        self.task_size_labels = {}    # key -> Gtk.Label
+
+        # Comprobar salud del driver NVIDIA y detectar GPUs
         driver_ok, driver_err = check_nvidia_driver_status()
         if not driver_ok:
             self.gpus = []
@@ -90,8 +113,61 @@ class NvidiaOptimizerApp(Gtk.Window):
             self._initial_driver_err = None
             self.gpus = detect_all_gpus()
 
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.add(main_box)
+        # Contenedor Principal: Notebook (Pestañas)
+        self.notebook = Gtk.Notebook()
+        self.notebook.set_tab_pos(Gtk.PositionType.TOP)
+        self.add(self.notebook)
+
+        # 1. Pestaña GPU
+        gpu_tab_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        gpu_tab_icon = Gtk.Image.new_from_icon_name("nvidia-settings", Gtk.IconSize.MENU)
+        gpu_tab_label = Gtk.Label(label="<b>GPU</b>")
+        gpu_tab_label.set_use_markup(True)
+        gpu_tab_box.pack_start(gpu_tab_icon, False, False, 0)
+        gpu_tab_box.pack_start(gpu_tab_label, False, False, 0)
+        gpu_tab_box.show_all()
+
+        gpu_page = self._build_gpu_page()
+        self.notebook.append_page(gpu_page, gpu_tab_box)
+
+        # 2. Pestaña Utils
+        utils_tab_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        utils_tab_icon = Gtk.Image.new_from_icon_name("drive-harddisk", Gtk.IconSize.MENU)
+        utils_tab_label = Gtk.Label(label="<b>Utils</b>")
+        utils_tab_label.set_use_markup(True)
+        utils_tab_box.pack_start(utils_tab_icon, False, False, 0)
+        utils_tab_box.pack_start(utils_tab_label, False, False, 0)
+        utils_tab_box.show_all()
+
+        utils_page = self._build_utils_page()
+        self.notebook.append_page(utils_page, utils_tab_box)
+
+        # Inicializacion GPU
+        if not self.gpus:
+            self._show_no_gpu_error(self._initial_driver_err)
+        else:
+            for gpu in self.gpus:
+                self.gpu_combo.append_text(f"GPU {gpu.gpu_index}: {gpu.display_name}")
+
+            if len(self.gpus) > 1:
+                self.gpu_selector_box.set_no_show_all(False)
+                self.gpu_selector_box.show_all()
+
+            self.gpu_combo.set_active(0)
+
+        # Inicializacion Utils
+        self._refresh_disk_info()
+        # Iniciar escaneo de disco en segundo plano al arrancar
+        self._start_scan_async(silent=True)
+
+    # =========================================================================
+    # PESTAÑA GPU (Construcción y Lógica)
+    # =========================================================================
+
+    def _build_gpu_page(self):
+        """Construye el contenedor completo de la pestaña GPU."""
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        main_box.set_border_width(8)
 
         # --- Tarjeta de cabecera ----------------------------------------
         header_frame = Gtk.Frame()
@@ -203,25 +279,7 @@ class NvidiaOptimizerApp(Gtk.Window):
 
         main_box.pack_start(button_box, False, False, 0)
 
-        # --- Inicializacion ----------------------------------------------
-        if not self.gpus:
-            self._show_no_gpu_error(self._initial_driver_err)
-            return
-
-        # Poblar el combo de GPU
-        for gpu in self.gpus:
-            self.gpu_combo.append_text(f"GPU {gpu.gpu_index}: {gpu.display_name}")
-
-        if len(self.gpus) > 1:
-            self.gpu_selector_box.set_no_show_all(False)
-            self.gpu_selector_box.show_all()
-
-        self.gpu_combo.set_active(0)
-        # _on_gpu_changed se dispara automaticamente al set_active
-
-    # -------------------------------------------------------------------------
-    # Cambio de GPU seleccionada
-    # -------------------------------------------------------------------------
+        return main_box
 
     def _on_gpu_changed(self, combo):
         idx = combo.get_active()
@@ -267,7 +325,6 @@ class NvidiaOptimizerApp(Gtk.Window):
 
     def _build_profile_widgets(self):
         """Reconstruye los radio buttons segun la GPU seleccionada sin seleccion inicial por defecto."""
-        # Limpiar widgets anteriores
         for w in self._profile_widgets:
             self.profiles_vbox.remove(w)
         self._profile_widgets = []
@@ -277,7 +334,7 @@ class NvidiaOptimizerApp(Gtk.Window):
         if gpu is None:
             return
 
-        # RadioButton oculto del grupo que absorbe la seleccion inicial (ningun boton visible activo)
+        # RadioButton oculto del grupo que absorbe la seleccion inicial
         self._dummy_rb = Gtk.RadioButton.new_with_label(None, "None")
         self._dummy_rb.set_active(True)
 
@@ -318,33 +375,28 @@ class NvidiaOptimizerApp(Gtk.Window):
                 self.cb_daemon.set_sensitive(True)
                 self.cb_daemon.set_tooltip_text("")
 
-    # -------------------------------------------------------------------------
-    # Lectura de datos en tiempo real
-    # -------------------------------------------------------------------------
-
     def get_gpu_data(self):
-        """Consulta nvidia-smi para la GPU actualmente seleccionada."""
         if self.current_gpu is None:
             return 0.0, "N/A", "N/A", "N/A", "N/A"
         try:
-            gpu_id = self.current_gpu.gpu_index
             cmd = [
                 "nvidia-smi",
-                f"--id={gpu_id}",
-                "--query-gpu=power.limit,temperature.gpu,utilization.gpu,"
-                "clocks.current.memory,clocks.current.graphics",
+                f"--id={self.current_gpu.gpu_index}",
+                "--query-gpu=power.draw,temperature.gpu,utilization.gpu,clocks.current.graphics,clocks.current.memory",
                 "--format=csv,noheader,nounits",
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            parts = [p.strip() for p in res.stdout.strip().split(",")]
-            limit   = float(parts[0]) if parts[0] not in ("N/A", "[N/A]") else 0.0
-            temp    = parts[1]
-            util    = parts[2]
-            mem_clk = parts[3]
-            gpu_clk = parts[4]
-            return limit, temp, util, mem_clk, gpu_clk
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            if res.returncode == 0 and res.stdout.strip():
+                parts = [p.strip() for p in res.stdout.strip().split(",")]
+                watts = float(parts[0]) if parts[0] != "[N/A]" else 0.0
+                temp = f"{parts[1]} C" if len(parts) > 1 else "N/A"
+                util = f"{parts[2]}%" if len(parts) > 2 else "N/A"
+                c_core = f"{parts[3]} MHz" if len(parts) > 3 else "N/A"
+                c_mem = f"{parts[4]} MHz" if len(parts) > 4 else "N/A"
+                return watts, temp, util, c_core, c_mem
         except Exception:
-            return 0.0, "N/A", "N/A", "N/A", "N/A"
+            pass
+        return 0.0, "N/A", "N/A", "N/A", "N/A"
 
     def is_daemon_enabled(self) -> bool:
         if self.current_gpu is None:
@@ -484,26 +536,16 @@ class NvidiaOptimizerApp(Gtk.Window):
         if gpu is None:
             return
 
-        limit, temp, util, mem_clk, gpu_clk = self.get_gpu_data()
-
-        if gpu.supports_power_limit:
-            self.status_label.set_markup(
-                f"Limite actual: <b>{limit:.0f} W</b>   |   "
-                f"Temp: <b>{temp}°C</b>   |   Uso: <b>{util}%</b>"
-            )
-            self.clocks_label.set_markup(
-                f"<small>Reloj GPU: <b>{gpu_clk} MHz</b>   |   "
-                f"Reloj VRAM: <b>{mem_clk} MHz</b></small>"
-            )
-        else:
-            # GPU movil: sin info de wattaje
-            self.status_label.set_markup(
-                f"Temp: <b>{temp}°C</b>   |   Uso: <b>{util}%</b>"
-            )
-            self.clocks_label.set_markup(
-                f"<small>Reloj GPU: <b>{gpu_clk} MHz</b>   |   "
-                f"Reloj VRAM: <b>{mem_clk} MHz</b></small>"
-            )
+        watts, temp, util, c_core, c_mem = self.get_gpu_data()
+        self.status_label.set_markup(
+            f"<b>Consumo:</b> {watts:.1f} W   |   "
+            f"<b>Temp:</b> {temp}   |   "
+            f"<b>Uso GPU:</b> {util}"
+        )
+        self.clocks_label.set_markup(
+            f"<b>Reloj Nucleo:</b> {c_core}   |   "
+            f"<b>VRAM:</b> {c_mem}"
+        )
 
         # ---- Inicio automatico (daemon) ----------------------------------
         daemon_active = self.is_daemon_enabled()
@@ -536,7 +578,7 @@ class NvidiaOptimizerApp(Gtk.Window):
                 f"{GLib.markup_escape_text(profile.name)}</b> — {detail}{note}"
             )
         else:
-            if self.profile_radio_buttons:
+            if getattr(self, "_dummy_rb", None):
                 self._dummy_rb.set_active(True)
             self.apply_btn.set_sensitive(False)
             self.profile_status_label.set_markup(
@@ -574,23 +616,13 @@ class NvidiaOptimizerApp(Gtk.Window):
                 "— el perfil solo se aplica en esta sesión" + stale_warn
             )
 
-    # -------------------------------------------------------------------------
-    # Aplicar configuracion
-    # -------------------------------------------------------------------------
-
     def _get_selected_profile(self):
-        """Devuelve el PowerProfile seleccionado actualmente o None si ninguno esta activo."""
         for rb, profile in self.profile_radio_buttons:
             if rb.get_active():
                 return profile
         return None
 
     def execute_privileged(self, profile, enable_daemon: bool):
-        """
-        Ejecuta apply.sh con privilegios de root.
-        Parametros pasados al script:
-          <watts> <gpu_index> <enable_daemon> <eco_min_clock> <eco_max_clock> <powermizer_mode>
-        """
         gpu = self.current_gpu
         args = [
             APPLY_SCRIPT,
@@ -606,7 +638,6 @@ class NvidiaOptimizerApp(Gtk.Window):
         try:
             proc = subprocess.run(["pkexec"] + args, capture_output=True, text=True)
             if proc.returncode == 0:
-                # PowerMizer desde la sesion X11 del usuario actual
                 subprocess.run(
                     ["nvidia-settings", "-a",
                      f"[gpu:{gpu.gpu_index}]/GPUPowerMizerMode={profile.powermizer_mode}"],
@@ -614,7 +645,7 @@ class NvidiaOptimizerApp(Gtk.Window):
                 )
                 return True, "Configuracion aplicada con exito."
             elif proc.returncode in (126, 127):
-                pass  # pkexec no disponible, intentar zenity
+                pass
             else:
                 stderr_l = proc.stderr.lower()
                 if "dismissed" in stderr_l or proc.returncode == 1:
@@ -724,10 +755,6 @@ class NvidiaOptimizerApp(Gtk.Window):
                 dialog.run()
                 dialog.destroy()
 
-    # -------------------------------------------------------------------------
-    # Error: sin GPU / Driver no operativo
-    # -------------------------------------------------------------------------
-
     def _show_no_gpu_error(self, custom_msg=None):
         """Muestra un mensaje de error si no se detecta ninguna GPU NVIDIA o el driver falla."""
         self.apply_btn.set_sensitive(False)
@@ -760,6 +787,411 @@ class NvidiaOptimizerApp(Gtk.Window):
         self.clocks_label.set_text("")
         self.daemon_status_label.set_text("")
         self.profile_status_label.set_text("")
+
+    # =========================================================================
+    # PESTAÑA UTILS (Construcción y Lógica de Limpieza)
+    # =========================================================================
+
+    def _build_utils_page(self):
+        """Construye el panel completo de utilidades de disco y limpieza del sistema."""
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        vbox.set_border_width(10)
+        scrolled.add(vbox)
+
+        # 1. Cabecera / Tarjeta de Almacenamiento
+        disk_frame = Gtk.Frame()
+        disk_frame.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
+        disk_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        disk_box.set_border_width(10)
+
+        header_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        disk_icon = Gtk.Image.new_from_icon_name("drive-harddisk", Gtk.IconSize.DIALOG)
+        header_row.pack_start(disk_icon, False, False, 0)
+
+        disk_info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        title = Gtk.Label()
+        title.set_markup("<b><big>Almacenamiento del Sistema (/)</big></b>")
+        title.set_xalign(0)
+        disk_info_box.pack_start(title, False, False, 0)
+
+        self.disk_stats_label = Gtk.Label()
+        self.disk_stats_label.set_markup("Leyendo estado del disco...")
+        self.disk_stats_label.set_xalign(0)
+        disk_info_box.pack_start(self.disk_stats_label, False, False, 0)
+
+        header_row.pack_start(disk_info_box, True, True, 0)
+
+        disk_refresh_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
+        disk_refresh_btn.set_tooltip_text("Actualizar estado del almacenamiento")
+        disk_refresh_btn.connect("clicked", lambda b: self._refresh_disk_info())
+        header_row.pack_end(disk_refresh_btn, False, False, 0)
+
+        disk_box.pack_start(header_row, False, False, 0)
+
+        # Barra de progreso del disco
+        self.disk_progress = Gtk.ProgressBar()
+        self.disk_progress.set_show_text(True)
+        self.disk_progress.set_fraction(0.0)
+        disk_box.pack_start(self.disk_progress, False, False, 0)
+
+        disk_frame.add(disk_box)
+        vbox.pack_start(disk_frame, False, False, 0)
+
+        # 2. Frame de Limpieza de Espacio
+        cleanup_frame = Gtk.Frame(label=" Herramientas de Liberación de Espacio ")
+        cleanup_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        cleanup_box.set_border_width(10)
+
+        # Barra de acciones de escaneo
+        scan_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.scan_summary_label = Gtk.Label()
+        self.scan_summary_label.set_markup("<small><span color='#555'>Pulsa 'Analizar' para calcular el espacio recuperable.</span></small>")
+        self.scan_summary_label.set_xalign(0)
+        scan_bar.pack_start(self.scan_summary_label, True, True, 0)
+
+        self.scan_spinner = Gtk.Spinner()
+        scan_bar.pack_start(self.scan_spinner, False, False, 0)
+
+        self.scan_btn = Gtk.Button(label=" Analizar Espacio ")
+        self.scan_btn.set_image(Gtk.Image.new_from_icon_name("system-search-symbolic", Gtk.IconSize.BUTTON))
+        self.scan_btn.set_always_show_image(True)
+        self.scan_btn.connect("clicked", lambda b: self._start_scan_async(silent=False))
+        scan_bar.pack_end(self.scan_btn, False, False, 0)
+
+        cleanup_box.pack_start(scan_bar, False, False, 0)
+        cleanup_box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
+
+        # Lista de tareas
+        for task in self.cleaner_tasks:
+            task_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+            # Checkbox + info
+            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            cb = Gtk.CheckButton(label=task.title)
+            cb.set_active(task.default_enabled)
+            self.task_check_buttons[task.key] = cb
+
+            # Si requiere root, añadir distintivo sutil
+            if task.requires_root:
+                cb.get_children()[0].set_markup(f"<b>{task.title}</b> <small><span color='#777'>(Requiere root)</span></small>")
+            else:
+                cb.get_children()[0].set_markup(f"<b>{task.title}</b>")
+
+            desc = Gtk.Label()
+            desc.set_markup(f"<small><span color='#666'>{task.description}</span></small>")
+            desc.set_xalign(0)
+            desc.set_margin_left(24)
+
+            text_box.pack_start(cb, False, False, 0)
+            text_box.pack_start(desc, False, False, 0)
+            task_row.pack_start(text_box, True, True, 0)
+
+            # Label de tamaño estimado
+            size_lbl = Gtk.Label(label="--")
+            size_lbl.set_xalign(1.0)
+            size_lbl.set_valign(Gtk.Align.CENTER)
+            self.task_size_labels[task.key] = size_lbl
+            task_row.pack_end(size_lbl, False, False, 0)
+
+            cleanup_box.pack_start(task_row, False, False, 2)
+
+        # Enlaces de seleccionar / deseleccionar todos
+        select_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        select_bar.set_margin_top(4)
+
+        btn_select_all = Gtk.Button(label="Seleccionar todo")
+        btn_select_all.set_relief(Gtk.ReliefStyle.NONE)
+        btn_select_all.connect("clicked", lambda b: self._set_all_tasks(True))
+        select_bar.pack_start(btn_select_all, False, False, 0)
+
+        btn_deselect_all = Gtk.Button(label="Deseleccionar todo")
+        btn_deselect_all.set_relief(Gtk.ReliefStyle.NONE)
+        btn_deselect_all.connect("clicked", lambda b: self._set_all_tasks(False))
+        select_bar.pack_start(btn_deselect_all, False, False, 0)
+
+        cleanup_box.pack_start(select_bar, False, False, 0)
+
+        cleanup_frame.add(cleanup_box)
+        vbox.pack_start(cleanup_frame, False, False, 0)
+
+        # 3. Consola / Visor de salida (Expander)
+        self.log_expander = Gtk.Expander(label=" Ver salida de la consola de limpieza ")
+        log_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        log_box.set_border_width(6)
+
+        log_scroll = Gtk.ScrolledWindow()
+        log_scroll.set_min_content_height(120)
+        log_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+
+        self.log_text_view = Gtk.TextView()
+        self.log_text_view.set_editable(False)
+        self.log_text_view.set_cursor_visible(False)
+        self.log_text_view.override_font(Pango.FontDescription("monospace 9"))
+        log_scroll.add(self.log_text_view)
+        log_box.pack_start(log_scroll, True, True, 0)
+
+        self.log_expander.add(log_box)
+        vbox.pack_start(self.log_expander, False, False, 0)
+
+        # 4. Botones de acción inferiores
+        action_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        action_bar.set_halign(Gtk.Align.END)
+        action_bar.set_margin_top(6)
+
+        utils_close_btn = Gtk.Button(label="Cerrar")
+        utils_close_btn.connect("clicked", lambda b: self.close())
+        action_bar.pack_start(utils_close_btn, False, False, 0)
+
+        self.clean_btn = Gtk.Button(label=" Limpiar Seleccionados ")
+        self.clean_btn.get_style_context().add_class("suggested-action")
+        self.clean_btn.set_image(Gtk.Image.new_from_icon_name("edit-clear-all-symbolic", Gtk.IconSize.BUTTON))
+        self.clean_btn.set_always_show_image(True)
+        self.clean_btn.connect("clicked", self._on_clean_clicked)
+        action_bar.pack_start(self.clean_btn, False, False, 0)
+
+        vbox.pack_start(action_bar, False, False, 0)
+
+        return scrolled
+
+    def _set_all_tasks(self, active: bool):
+        for cb in self.task_check_buttons.values():
+            cb.set_active(active)
+
+    def _append_log(self, text: str):
+        buffer = self.log_text_view.get_buffer()
+        end_iter = buffer.get_end_iter()
+        buffer.insert(end_iter, text + "\n")
+        # Scroll al final
+        mark = buffer.create_mark(None, buffer.get_end_iter(), False)
+        self.log_text_view.scroll_to_mark(mark, 0.05, True, 0.0, 1.0)
+
+    def _clear_log(self):
+        buffer = self.log_text_view.get_buffer()
+        buffer.set_text("")
+
+    def _refresh_disk_info(self):
+        """Actualiza la barra de progreso y etiquetas de disco."""
+        usage = DiskInfo.get_mount_usage("/")
+        if usage["valid"]:
+            pct = usage["percent"]
+            self.disk_progress.set_fraction(pct / 100.0)
+            self.disk_progress.set_text(f"{pct:.1f}% usado")
+
+            self.disk_stats_label.set_markup(
+                f"<b>Espacio Usado:</b> {usage['used_str']}   |   "
+                f"<b>Libre:</b> <span color='#2e7d32'><b>{usage['free_str']}</b></span>   |   "
+                f"<b>Total:</b> {usage['total_str']}"
+            )
+        else:
+            self.disk_stats_label.set_text("No se pudo obtener información del disco.")
+
+    def _start_scan_async(self, silent: bool = False):
+        """Inicia el análisis de espacio recuperable en segundo plano para no congelar la UI."""
+        self.scan_btn.set_sensitive(False)
+        self.scan_spinner.start()
+        if not silent:
+            self.scan_summary_label.set_markup("<small><span color='#0277bd'>Analizando espacio recuperable en disco...</span></small>")
+
+        def worker():
+            total_recoverable = 0
+            results = {}
+            for task in self.cleaner_tasks:
+                size = self.disk_cleaner.scan_task_size(task.key)
+                task.estimated_bytes = size
+                task.estimated_str = format_size(size)
+                results[task.key] = (size, task.estimated_str)
+                total_recoverable += size
+
+            def on_done():
+                self.scan_spinner.stop()
+                self.scan_btn.set_sensitive(True)
+                for key, (size, s_str) in results.items():
+                    lbl = self.task_size_labels.get(key)
+                    if lbl:
+                        if size > 0:
+                            lbl.set_markup(f"<b><span color='#2e7d32'>{s_str}</span></b>")
+                        else:
+                            lbl.set_markup(f"<span color='#888'>{s_str}</span>")
+
+                sum_str = format_size(total_recoverable)
+                self.scan_summary_label.set_markup(
+                    f"<b>Espacio total recuperable estimado:</b> <span color='#2e7d32'><b>{sum_str}</b></span>"
+                )
+
+            GLib.idle_add(on_done)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+    def _get_selected_tasks(self) -> list:
+        return [k for k, cb in self.task_check_buttons.items() if cb.get_active()]
+
+    def _execute_root_script(self, script_content: str) -> tuple:
+        """Ejecuta un script bash como root usando pkexec o fallback con zenity."""
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sh") as tmp:
+            tmp.write(script_content)
+            tmp_path = tmp.name
+
+        os.chmod(tmp_path, 0o755)
+
+        # 1. Intentar pkexec
+        try:
+            proc = subprocess.run(["pkexec", "/bin/bash", tmp_path], capture_output=True, text=True)
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            if proc.returncode == 0:
+                return True, proc.stdout
+            elif proc.returncode in (126, 127):
+                pass
+            else:
+                stderr_l = proc.stderr.lower()
+                if "dismissed" in stderr_l or proc.returncode == 1:
+                    return False, "Operación cancelada por el usuario."
+        except Exception:
+            pass
+
+        # 2. Fallback zenity + sudo -S
+        try:
+            res = subprocess.run(
+                ["zenity", "--password",
+                 "--title=Permisos de Administrador",
+                 "--text=Introduce tu contraseña para ejecutar la limpieza del sistema:"],
+                capture_output=True, text=True
+            )
+            if res.returncode != 0:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                return False, "Operación cancelada."
+
+            pwd = res.stdout.strip()
+            if not pwd:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                return False, "Contraseña vacía."
+
+            proc = subprocess.run(
+                ["sudo", "-S", "/bin/bash", tmp_path],
+                input=pwd + "\n", capture_output=True, text=True
+            )
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+            if proc.returncode == 0:
+                return True, proc.stdout
+            else:
+                return False, f"Error: {proc.stderr}\n{proc.stdout}"
+        except Exception as e:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            return False, str(e)
+
+    def _on_clean_clicked(self, widget):
+        selected = self._get_selected_tasks()
+        if not selected:
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                flags=0,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.OK,
+                text="No has seleccionado ninguna tarea",
+            )
+            dialog.format_secondary_text("Marca al menos una casilla para realizar la limpieza.")
+            dialog.run()
+            dialog.destroy()
+            return
+
+        # Diálogo de confirmación
+        has_root = any(t.requires_root for t in self.cleaner_tasks if t.key in selected)
+        msg_text = "¿Deseas proceder con la limpieza de los elementos seleccionados?"
+        sec_text = "Se liberará espacio en el disco eliminando los elementos marcados."
+        if "trash" in selected:
+            sec_text += "\n\n⚠ Se vaciará la papelera de reciclaje de forma permanente."
+        if has_root:
+            sec_text += "\n\nSe solicitarán permisos de administrador para las tareas del sistema."
+
+        confirm_dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text=msg_text
+        )
+        confirm_dialog.format_secondary_text(sec_text)
+        response = confirm_dialog.run()
+        confirm_dialog.destroy()
+
+        if response != Gtk.ResponseType.YES:
+            return
+
+        self.clean_btn.set_sensitive(False)
+        self.scan_btn.set_sensitive(False)
+        self.log_expander.set_expanded(True)
+        self._clear_log()
+        self._append_log("=== INICIANDO TAREAS DE LIMPIEZA ===")
+
+        # Ejecución en hilo
+        def clean_worker():
+            # 1. Tareas de usuario
+            user_keys = [k for k in selected if not any(t.key == k and t.requires_root for t in self.cleaner_tasks)]
+            if user_keys:
+                GLib.idle_add(self._append_log, "--- Limpiando espacio de usuario ---")
+                u_ok, u_logs = self.disk_cleaner.clean_user_space(user_keys)
+                for line in u_logs:
+                    GLib.idle_add(self._append_log, line)
+
+            # 2. Tareas de root
+            root_keys = [k for k in selected if any(t.key == k and t.requires_root for t in self.cleaner_tasks)]
+            root_success = True
+            root_out = ""
+            if root_keys:
+                GLib.idle_add(self._append_log, "\n--- Solicitando permisos de administrador ---")
+                script_text = self.disk_cleaner.build_root_script(root_keys)
+                r_ok, r_msg = self._execute_root_script(script_text)
+                root_success = r_ok
+                root_out = r_msg
+                for line in r_msg.splitlines():
+                    GLib.idle_add(self._append_log, line)
+
+            def on_finish():
+                self.clean_btn.set_sensitive(True)
+                self.scan_btn.set_sensitive(True)
+                self._append_log("\n=== TAREAS FINALIZADAS ===")
+                self._refresh_disk_info()
+                self._start_scan_async(silent=True)
+
+                if root_success:
+                    succ_dialog = Gtk.MessageDialog(
+                        transient_for=self,
+                        flags=0,
+                        message_type=Gtk.MessageType.INFO,
+                        buttons=Gtk.ButtonsType.OK,
+                        text="¡Limpieza completada con éxito!",
+                    )
+                    succ_dialog.format_secondary_text(
+                        "Se han ejecutado las tareas de liberación de espacio.\n"
+                        "Revisa la consola inferior para ver el detalle de cada acción."
+                    )
+                    succ_dialog.run()
+                    succ_dialog.destroy()
+                else:
+                    if "cancelada" not in root_out.lower():
+                        err_dialog = Gtk.MessageDialog(
+                            transient_for=self,
+                            flags=0,
+                            message_type=Gtk.MessageType.ERROR,
+                            buttons=Gtk.ButtonsType.OK,
+                            text="Hubo un problema durante la limpieza",
+                        )
+                        err_dialog.format_secondary_text(root_out)
+                        err_dialog.run()
+                        err_dialog.destroy()
+
+            GLib.idle_add(on_finish)
+
+        threading.Thread(target=clean_worker, daemon=True).start()
 
 
 if __name__ == "__main__":

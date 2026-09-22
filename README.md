@@ -57,9 +57,16 @@ Las GPUs de portátil (como la GTX 1060 Mobile o GT 840M) no permiten cambiar el
 
 * **Detección automática:** Funciona con cualquier GPU NVIDIA sin configuración manual.
 * **Multi-GPU:** Si tienes varias GPUs NVIDIA, puedes elegir cuál configurar desde la propia app.
-* **Interfaz gráfica moderna:** Integrada de forma nativa con el tema GTK (Cinnamon, GNOME, XFCE, MATE).
-* **Monitor en tiempo real:** Lectura en vivo de vatios, temperatura, uso, reloj del núcleo y de la VRAM.
+* **Interfaz gráfica moderna con pestañas:** Conmutación entre GPU y Utils integrada en GTK3 (Cinnamon, GNOME, XFCE, MATE).
+* **Monitor en tiempo real:** Lectura en vivo de la GPU (vatios, temperatura, uso, relojes) y monitor de uso de disco en `/`.
 * **Estado visible al abrir:** Indica el perfil de energía realmente aplicado (detectado del hardware) y si el daemon de arranque está activo.
+* **Pestaña Utils (Limpieza de Disco):** Suite de herramientas para recuperar espacio del sistema:
+  - Limpieza de caché de paquetes (`apt clean`).
+  - Desinstalación de dependencias huérfanas (`apt autoremove --purge`).
+  - Reducción y aspirado de registros del sistema (`journalctl --vacuum-size=100M` y `7d`).
+  - Limpieza de runtimes Flatpak huérfanos (`flatpak uninstall --unused`).
+  - Limpieza de miniaturas (`~/.cache/thumbnails`) y papelera de reciclaje.
+  - Estimación y análisis de espacio recuperable antes de limpiar.
 * **Persistencia en el arranque:** Servicio `systemd` ultraligero por GPU para aplicar el perfil automáticamente en cada arranque.
 * **Perfil De Fábrica sin redundancias:** Al aplicar «De Fábrica» el inicio automático se desactiva automáticamente (no tiene sentido persistirlo).
 * **Cero consumo en segundo plano:** La app y el servicio no quedan residentes en memoria.

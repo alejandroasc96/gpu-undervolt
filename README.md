@@ -21,6 +21,7 @@ La herramienta consulta `nvidia-smi` al arrancar para leer las capacidades reale
 |:---|:---:|:---:|:---:|
 | NVIDIA GeForce GTX 1660 / Ti / Super | 120–125 W | 4 perfiles | Escritorio |
 | NVIDIA GeForce GTX 1060 6G / 3G | 120 W | 4 perfiles | Escritorio |
+| NVIDIA GeForce GTX 1060 Mobile / Max-Q | 80 W / 60 W | 3 modos PowerMizer | Portátil |
 | NVIDIA GeForce RTX 5060 Ti 16G | 180 W | 4 perfiles | Escritorio |
 | NVIDIA GeForce GT 840M | 33 W | 3 modos PowerMizer | Portátil |
 | **Cualquier otra GPU NVIDIA** | Detectado | Calculado | Auto |
@@ -42,13 +43,13 @@ Los perfiles se calculan como **porcentajes del TDP real** de la GPU detectada:
 
 ### GPUs móviles (portátil)
 
-Las GPUs de portátil (como la GT 840M) no permiten cambiar el TDP vía `nvidia-smi`. Para estas GPUs se ofrecen 3 modos **PowerMizer**:
+Las GPUs de portátil (como la GTX 1060 Mobile o GT 840M) no permiten cambiar el TDP en vatios vía `nvidia-smi`. Para estas GPUs se ofrecen 3 modos optimizados mediante **PowerMizer** manteniendo la misma coherencia que en escritorio:
 
 | Modo | Descripción |
 |:---|:---|
-| 🌱 Ahorro de Energía | PowerMizer Adaptativo — baja frecuencias en reposo |
-| 🍃 Equilibrado | PowerMizer Automático — el driver decide |
-| ⚡ Máximo Rendimiento | PowerMizer Máximo — frecuencias siempre al tope |
+| 🌱 **Ultra Eco** | PowerMizer Adaptativo — baja frecuencias a ~139 MHz en reposo para máximo ahorro y batería |
+| ⚡ **Punto Dulce** | PowerMizer Máximo Rendimiento (P0) — frecuencias sostenidas para evitar caídas de FPS en juegos |
+| ⚙️ **De Fábrica (Stock)** | PowerMizer Automático — restaura el comportamiento original del driver y elimina persistencia |
 
 ---
 
@@ -56,6 +57,9 @@ Las GPUs de portátil (como la GT 840M) no permiten cambiar el TDP vía `nvidia-
 
 * **Detección automática:** Funciona con cualquier GPU NVIDIA sin configuración manual.
 * **Multi-GPU:** Si tienes varias GPUs NVIDIA, puedes elegir cuál configurar desde la propia app.
+* **Interfaz gráfica moderna con pestañas:** Conmutación entre GPU y Utils integrada en GTK3 (Cinnamon, GNOME, XFCE, MATE).
+* **Monitor en tiempo real:** Lectura en vivo de la GPU (vatios, temperatura, uso, relojes) y monitor de uso de disco en `/`.
+* **Estado visible al abrir:** Indica el perfil de energía realmente aplicado (detectado del hardware) y si el daemon de arranque está activo.
 * **Pestaña Utils (Limpieza y Optimización SSD):** Suite integral para recuperar espacio y mantener la salud del disco:
   - **Optimización física SSD (TRIM):** Botón `fstrim` para recortar bloques libres, mejorando la velocidad de escritura y vida útil del SSD.
   - **Caché de Shaders de Steam y GPU NVIDIA:** Limpieza de `shadercache` y `GLCache` (libera gigabytes de juegos sin afectar rendimiento).
@@ -67,9 +71,8 @@ Las GPUs de portátil (como la GT 840M) no permiten cambiar el TDP vía `nvidia-
   - **Runtimes Flatpak huérfanos:** `flatpak uninstall --unused`.
   - **Miniaturas y Papelera:** Vaciado de `~/.cache/thumbnails` y papelera.
   - **Análisis previo de espacio:** Estimación en vivo del espacio recuperable antes de aplicar cambios.
-* **Interfaz gráfica moderna con pestañas:** Conmutación entre GPU y Utils integrada en GTK3.
-* **Monitor en tiempo real:** Lectura en vivo de GPU y monitor de uso de disco en `/`.
 * **Persistencia en el arranque:** Servicio `systemd` ultraligero por GPU para aplicar el perfil automáticamente en cada arranque.
+* **Perfil De Fábrica sin redundancias:** Al aplicar «De Fábrica» el inicio automático se desactiva automáticamente (no tiene sentido persistirlo).
 * **Cero consumo en segundo plano:** La app y el servicio no quedan residentes en memoria.
 
 ---

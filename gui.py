@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
 Optimizador de Energia NVIDIA & Utilidades del Sistema (Linux)
-Soporta optimización de GPUs NVIDIA y herramientas de limpieza de espacio en disco.
+Soporta optimizacion de GPUs NVIDIA (perfiles de consumo + daemon de arranque)
+y herramientas de limpieza de espacio en disco (pestana Utils).
 """
 import sys
 import os
+import re
 import subprocess
 import threading
 import tempfile
+from typing import Optional
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -16,10 +19,42 @@ from gi.repository import Gtk, GLib, Pango
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 APPLY_SCRIPT = os.path.join(SCRIPT_DIR, "apply.sh")
 
+# --- Almacenamiento de configuracion persistente -----------------------------
+CONFIG_DIR = os.path.expanduser("~/.config/nvidia-optimizer")
+
+def _get_saved_profile_path(gpu_index: int) -> str:
+    return os.path.join(CONFIG_DIR, f"saved_profile_gpu{gpu_index}.txt")
+
+def _get_saved_profile(gpu_index: int) -> Optional[str]:
+    path = _get_saved_profile_path(gpu_index)
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            return None
+    return None
+
+def _save_profile(gpu_index: int, profile_name: str):
+    """Guarda siempre el perfil aplicado para poder informar de el al reabrir
+    la app, tenga o no inicio automatico."""
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    path = _get_saved_profile_path(gpu_index)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(profile_name)
+    except Exception:
+        pass
+
 # Importar modulos auxiliares
 sys.path.insert(0, SCRIPT_DIR)
 try:
-    from gpu_detector import detect_all_gpus, GpuInfo, PowerProfile
+    from gpu_detector import (
+        detect_all_gpus,
+        check_nvidia_driver_status,
+        GpuInfo,
+        PowerProfile,
+    )
 except ImportError as e:
     import traceback
     dialog = Gtk.MessageDialog(
@@ -61,6 +96,7 @@ class NvidiaOptimizerApp(Gtk.Window):
         self.current_gpu = None
         self._profile_widgets = []
         self.profile_radio_buttons = []
+        self._initial_driver_err = None
 
         # Estado interno Utils
         self.disk_cleaner = DiskCleaner()
@@ -68,8 +104,14 @@ class NvidiaOptimizerApp(Gtk.Window):
         self.task_check_buttons = {}  # key -> Gtk.CheckButton
         self.task_size_labels = {}    # key -> Gtk.Label
 
-        # Detectar GPUs
-        self.gpus = detect_all_gpus()
+        # Comprobar salud del driver NVIDIA y detectar GPUs
+        driver_ok, driver_err = check_nvidia_driver_status()
+        if not driver_ok:
+            self.gpus = []
+            self._initial_driver_err = driver_err
+        else:
+            self._initial_driver_err = None
+            self.gpus = detect_all_gpus()
 
         # Contenedor Principal: Notebook (Pestañas)
         self.notebook = Gtk.Notebook()
@@ -102,7 +144,7 @@ class NvidiaOptimizerApp(Gtk.Window):
 
         # Inicializacion GPU
         if not self.gpus:
-            self._show_no_gpu_error()
+            self._show_no_gpu_error(self._initial_driver_err)
         else:
             for gpu in self.gpus:
                 self.gpu_combo.append_text(f"GPU {gpu.gpu_index}: {gpu.display_name}")
@@ -142,6 +184,11 @@ class NvidiaOptimizerApp(Gtk.Window):
         self.title_label.set_markup("<b><big>Detectando GPU...</big></b>")
         self.title_label.set_xalign(0)
         info_vbox.pack_start(self.title_label, False, False, 0)
+
+        # Perfil de energia detectado al abrir la aplicacion
+        self.profile_status_label = Gtk.Label()
+        self.profile_status_label.set_xalign(0)
+        info_vbox.pack_start(self.profile_status_label, False, False, 0)
 
         self.status_label = Gtk.Label()
         self.status_label.set_xalign(0)
@@ -249,18 +296,35 @@ class NvidiaOptimizerApp(Gtk.Window):
             return
         self.title_label.set_markup(f"<b><big>{gpu.display_name}</big></b>")
 
+        # Ajustar controles segun si es GPU movil o escritorio
         if gpu.is_mobile:
+            self.mobile_note_label.set_markup(
+                "<small><span color='#0277bd'>ℹ GPU de portátil: control optimizado PowerMizer adaptado al hardware.</span></small>"
+            )
             self.mobile_note_label.show()
-            self.cb_daemon.set_sensitive(False)
-            self.persist_frame.set_sensitive(False)
-            self.profiles_frame.set_label(" Perfiles de Energia (PowerMizer) ")
+            self.cb_daemon.set_sensitive(True)
+            self.cb_daemon.set_label("Activar perfil al iniciar sesión")
+            self.persist_frame.set_sensitive(True)
+            self.persist_frame.set_label(" Inicio Automático (Sesión de Usuario) ")
+            self.persist_info.set_markup(
+                "<small><span color='#555'>Aplica el perfil de PowerMizer seleccionado "
+                "automáticamente cada vez que inicies sesión.</span></small>"
+            )
+            self.profiles_frame.set_label(" Perfiles de Energía (PowerMizer) ")
         else:
             self.mobile_note_label.hide()
             self.cb_daemon.set_sensitive(True)
+            self.cb_daemon.set_label("Activar siempre al encender el PC")
             self.persist_frame.set_sensitive(True)
+            self.persist_frame.set_label(" Inicio Automatico (Daemon / Systemd) ")
+            self.persist_info.set_markup(
+                "<small><span color='#555'>Aplica el perfil seleccionado "
+                "automaticamente en cada arranque del sistema.</span></small>"
+            )
             self.profiles_frame.set_label(" Perfiles de Consumo ")
 
     def _build_profile_widgets(self):
+        """Reconstruye los radio buttons segun la GPU seleccionada sin seleccion inicial por defecto."""
         for w in self._profile_widgets:
             self.profiles_vbox.remove(w)
         self._profile_widgets = []
@@ -270,14 +334,15 @@ class NvidiaOptimizerApp(Gtk.Window):
         if gpu is None:
             return
 
-        first_rb = None
+        # RadioButton oculto del grupo que absorbe la seleccion inicial
+        self._dummy_rb = Gtk.RadioButton.new_with_label(None, "None")
+        self._dummy_rb.set_active(True)
+
         for profile in gpu.profiles:
             label_text = f"{profile.emoji} {profile.description_short}"
-            if first_rb is None:
-                rb = Gtk.RadioButton.new_with_label(None, label_text)
-                first_rb = rb
-            else:
-                rb = Gtk.RadioButton.new_with_label_from_widget(first_rb, label_text)
+            rb = Gtk.RadioButton.new_with_label_from_widget(self._dummy_rb, label_text)
+            rb.set_active(False)
+            rb.connect("toggled", self._on_profile_toggled)
 
             sub = Gtk.Label()
             desc = profile.description_long.replace("&", "&amp;")
@@ -290,7 +355,25 @@ class NvidiaOptimizerApp(Gtk.Window):
             self._profile_widgets.extend([rb, sub])
             self.profile_radio_buttons.append((rb, profile))
 
+        self.apply_btn.set_sensitive(False)
         self.profiles_vbox.show_all()
+
+    def _on_profile_toggled(self, rb):
+        """Habilita el boton de aplicar y gestiona el checkbox de persistencia segun la opcion."""
+        if not rb.get_active():
+            return
+        profile = self._get_selected_profile()
+        if profile is not None:
+            self.apply_btn.set_sensitive(True)
+            if profile.name == "De Fabrica":
+                self.cb_daemon.set_active(False)
+                self.cb_daemon.set_sensitive(False)
+                self.cb_daemon.set_tooltip_text(
+                    "El modo De Fábrica no necesita inicio automático (resultaría redundante)."
+                )
+            else:
+                self.cb_daemon.set_sensitive(True)
+                self.cb_daemon.set_tooltip_text("")
 
     def get_gpu_data(self):
         if self.current_gpu is None:
@@ -315,20 +398,144 @@ class NvidiaOptimizerApp(Gtk.Window):
             pass
         return 0.0, "N/A", "N/A", "N/A", "N/A"
 
-    def is_daemon_active(self) -> bool:
+    def is_daemon_enabled(self) -> bool:
         if self.current_gpu is None:
             return False
-        service = f"nvidia-undervolt-gpu{self.current_gpu.gpu_index}.service"
+        if self.current_gpu.is_mobile:
+            gpu_idx = self.current_gpu.gpu_index
+            candidates = [
+                os.path.expanduser(
+                    f"~/.config/autostart/nvidia-optimizer-powermizer-gpu{gpu_idx}.desktop"
+                ),
+                f"/etc/xdg/autostart/nvidia-optimizer-powermizer-gpu{gpu_idx}.desktop",
+            ]
+            return any(os.path.isfile(p) for p in candidates)
         try:
             res = subprocess.run(
-                ["systemctl", "is-active", service],
-                capture_output=True, text=True, timeout=2,
+                ["systemctl", "is-enabled", self.current_gpu.service_name],
+                capture_output=True, text=True,
             )
-            return res.stdout.strip() == "active"
+            # "enabled"/"enabled-runtime" indican que esta activo al arranque.
+            return res.stdout.strip().startswith("enabled")
         except Exception:
             return False
 
+    def _stale_autostart_path(self) -> Optional[str]:
+        """Devuelve la ruta de una copia de autostart mal ubicada en /root.
+
+        Una version anterior de apply.sh escribia el autostart en el HOME de
+        root al ejecutarse via pkexec, dejando un archivo inerte y haciendo que
+        el daemon pareciera desactivado al reabrir la app.
+        """
+        if self.current_gpu is None or not self.current_gpu.is_mobile:
+            return None
+        path = (f"/root/.config/autostart/"
+                f"nvidia-optimizer-powermizer-gpu{self.current_gpu.gpu_index}.desktop")
+        return path if os.path.isfile(path) else None
+
+    # -------------------------------------------------------------------------
+    # Deteccion del perfil de energia realmente aplicado
+    # -------------------------------------------------------------------------
+
+    _POWERMIZER_NAMES = {0: "Adaptativo", 1: "Maximo Rendimiento", 2: "Automatico"}
+
+    def _profile_detail(self, profile) -> str:
+        """Texto corto con el valor concreto del perfil (vatios o modo PowerMizer)."""
+        gpu = self.current_gpu
+        if gpu is not None and gpu.supports_power_limit:
+            detail = f"{profile.watts} W"
+            if profile.eco_max_clock:
+                detail += f" + {profile.eco_max_clock} MHz"
+            return detail
+        return "PowerMizer " + self._POWERMIZER_NAMES.get(
+            profile.powermizer_mode, str(profile.powermizer_mode)
+        )
+
+    def _detect_profile_by_hardware(self):
+        """Lee el estado real de la GPU e intenta identificar el perfil aplicado.
+
+        - Escritorio: el limite de potencia (nvidia-smi) identifica univocamente
+          cada perfil, ya que cada uno usa unos vatios distintos.
+        - Movil / sin power limit: el modo PowerMizer activo (nvidia-settings).
+        Devuelve un PowerProfile o None si no se puede determinar.
+        """
+        gpu = self.current_gpu
+        if gpu is None or not gpu.profiles:
+            return None
+
+        if gpu.supports_power_limit:
+            limit = None
+            try:
+                res = subprocess.run(
+                    ["nvidia-smi",
+                     f"--id={gpu.gpu_index}",
+                     "--query-gpu=power.limit",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=5, check=True,
+                )
+                limit = float(res.stdout.strip().split(",")[0])
+            except Exception:
+                limit = None
+            if limit is None:
+                return None
+            for profile in gpu.profiles:
+                if profile.watts > 0 and abs(profile.watts - limit) <= 1.0:
+                    return profile
+            return None
+
+        # GPU sin power limit: identificar por modo PowerMizer activo
+        out = ""
+        try:
+            res = subprocess.run(
+                ["nvidia-settings", "-q",
+                 f"[gpu:{gpu.gpu_index}]/GPUPowerMizerMode", "-t"],
+                capture_output=True, text=True, timeout=5,
+            )
+            out = res.stdout.strip()
+        except Exception:
+            out = ""
+
+        mode = None
+        match = re.search(r":\s*(\d+)\s*$", out)
+        if match:
+            mode = int(match.group(1))
+        elif out.isdigit():
+            mode = int(out)
+        if mode is None:
+            return None
+
+        for profile in gpu.profiles:
+            if profile.powermizer_mode == mode:
+                return profile
+        return None
+
+    def get_current_profile(self):
+        """Devuelve (perfil, origen) del perfil actual.
+
+        origen = "hw"   -> leido directamente del hardware (fiable).
+        origen = "saved" -> ultimo perfil guardado por la app (no verificado).
+        (None, None)    -> no hay forma de saber que perfil esta aplicado.
+        """
+        gpu = self.current_gpu
+        if gpu is None or not gpu.profiles:
+            return None, None
+
+        profile = self._detect_profile_by_hardware()
+        if profile is not None:
+            return profile, "hw"
+
+        saved_name = _get_saved_profile(gpu.gpu_index)
+        if saved_name:
+            for profile in gpu.profiles:
+                if profile.name == saved_name:
+                    return profile, "saved"
+        return None, None
+
     def refresh_status(self):
+        gpu = self.current_gpu
+        if gpu is None:
+            return
+
         watts, temp, util, c_core, c_mem = self.get_gpu_data()
         self.status_label.set_markup(
             f"<b>Consumo:</b> {watts:.1f} W   |   "
@@ -339,21 +546,74 @@ class NvidiaOptimizerApp(Gtk.Window):
             f"<b>Reloj Nucleo:</b> {c_core}   |   "
             f"<b>VRAM:</b> {c_mem}"
         )
-        if self.current_gpu and not self.current_gpu.is_mobile:
-            daemon_active = self.is_daemon_active()
-            if daemon_active:
-                self.daemon_status_label.set_markup(
-                    "<b>Inicio automatico:</b> <span color='#2e7d32'>Activado (systemd)</span>"
-                )
-                self.cb_daemon.set_active(True)
+
+        # ---- Inicio automatico (daemon) ----------------------------------
+        daemon_active = self.is_daemon_enabled()
+        self.cb_daemon.set_active(daemon_active)
+
+        # ---- Perfil de energia actual ------------------------------------
+        profile, source = self.get_current_profile()
+
+        if profile is not None and self.profile_radio_buttons:
+            for rb, p in self.profile_radio_buttons:
+                if p.name == profile.name:
+                    if not rb.get_active():
+                        rb.set_active(True)   # dispara _on_profile_toggled
+                    break
+            self.apply_btn.set_sensitive(True)
+
+            note = ""
+            saved_name = _get_saved_profile(gpu.gpu_index)
+            if source == "hw":
+                if saved_name and saved_name != profile.name:
+                    note = (f" <span color='#e65100'>(perfil guardado: "
+                            f"{GLib.markup_escape_text(saved_name)}, sin aplicar "
+                            f"al arrancar)</span>")
             else:
-                self.daemon_status_label.set_markup(
-                    "<b>Inicio automatico:</b> <span color='#c62828'>Desactivado</span>"
-                )
-                self.cb_daemon.set_active(False)
+                note = " <span color='#757575'>(último perfil guardado, sin verificar)</span>"
+
+            detail = GLib.markup_escape_text(self._profile_detail(profile))
+            self.profile_status_label.set_markup(
+                f"Perfil actual: <b>{profile.emoji} "
+                f"{GLib.markup_escape_text(profile.name)}</b> — {detail}{note}"
+            )
         else:
+            if getattr(self, "_dummy_rb", None):
+                self._dummy_rb.set_active(True)
+            self.apply_btn.set_sensitive(False)
+            self.profile_status_label.set_markup(
+                "Perfil actual: <span color='#757575'>no detectado "
+                "(aún no se ha aplicado ninguno)</span>"
+            )
+
+        # ---- Aviso del estado del daemon ---------------------------------
+        if daemon_active:
+            desc = "autostart de sesión" if gpu.is_mobile else "servicio systemd"
+            if profile is not None and profile.name == "De Fabrica":
+                self.daemon_status_label.set_markup(
+                    "Inicio automático: <span color='#e65100'><b>ACTIVO</b></span> "
+                    f"({desc}) — <span color='#e65100'>redundante con el perfil "
+                    "De Fábrica: pulsa «Aplicar Configuracion» para desactivarlo.</span>"
+                )
+            else:
+                target = (f"«{GLib.markup_escape_text(profile.name)}»"
+                          if profile is not None else "el perfil guardado")
+                self.daemon_status_label.set_markup(
+                    "Inicio automático: <span color='#2e7d32'><b>ACTIVO</b></span> "
+                    f"({desc}) — aplicará {target} al arrancar"
+                )
+        else:
+            stale_warn = ""
+            stale_path = self._stale_autostart_path()
+            if stale_path:
+                stale_warn = (
+                    " <span color='#e65100'>⚠ Se detectó una copia antigua del "
+                    "inicio automático en /root procedente de una versión anterior. "
+                    "Marca la casilla y pulsa «Aplicar Configuracion» para corregirla.</span>"
+                )
             self.daemon_status_label.set_markup(
-                "<b>Inicio automatico:</b> <span color='#888'>No disponible para GPU movil</span>"
+                "Inicio automático: <span color='#757575'><b>DESACTIVADO</b></span> "
+                "— el perfil solo se aplica en esta sesión" + stale_warn
             )
 
     def _get_selected_profile(self):
@@ -429,6 +689,8 @@ class NvidiaOptimizerApp(Gtk.Window):
             return
 
         enable_daemon = self.cb_daemon.get_active()
+        if profile.name == "De Fabrica":
+            enable_daemon = False
 
         self.apply_btn.set_sensitive(False)
         while Gtk.events_pending():
@@ -438,15 +700,35 @@ class NvidiaOptimizerApp(Gtk.Window):
         self.apply_btn.set_sensitive(True)
 
         if success:
+            # Guardar siempre el perfil aplicado para poder informar de él al
+            # volver a abrir la app, tenga o no inicio automático.
+            _save_profile(self.current_gpu.gpu_index, profile.name)
+
             self.refresh_status()
-            if self.current_gpu and not self.current_gpu.is_mobile:
+
+            if profile.name == "De Fabrica":
+                daemon_msg = (
+                    "Se ha restaurado el estado De Fábrica original y se ha "
+                    "desactivado el inicio automático (resultaba redundante en "
+                    "este modo, por lo que no se volverá a aplicar al arrancar)."
+                )
+                if self.is_daemon_enabled():
+                    daemon_msg += (
+                        "\n\n⚠ El inicio automático sigue activo. Vuelve a pulsar "
+                        "«Aplicar Configuracion» para intentar desactivarlo."
+                    )
+            elif self.current_gpu and not self.current_gpu.is_mobile:
                 daemon_msg = (
                     "El servicio de arranque queda ACTIVADO."
                     if enable_daemon else
-                    "El inicio automatico queda DESACTIVADO."
+                    "Ajuste aplicado únicamente para la sesión actual."
                 )
             else:
-                daemon_msg = "Ajuste de PowerMizer aplicado."
+                daemon_msg = (
+                    "El perfil de PowerMizer se aplicará al iniciar sesión."
+                    if enable_daemon else
+                    "Ajuste aplicado únicamente para la sesión actual."
+                )
 
             dialog = Gtk.MessageDialog(
                 transient_for=self,
@@ -473,18 +755,38 @@ class NvidiaOptimizerApp(Gtk.Window):
                 dialog.run()
                 dialog.destroy()
 
-    def _show_no_gpu_error(self):
+    def _show_no_gpu_error(self, custom_msg=None):
+        """Muestra un mensaje de error si no se detecta ninguna GPU NVIDIA o el driver falla."""
         self.apply_btn.set_sensitive(False)
         self.cb_daemon.set_sensitive(False)
-        self.title_label.set_markup(
-            "<b><big><span color='#c62828'>Sin GPU NVIDIA detectada</span></big></b>"
-        )
-        self.status_label.set_markup(
-            "<span color='#555'>Asegurate de tener el driver propietario NVIDIA instalado.\n"
-            "Comprueba con: <tt>nvidia-smi</tt></span>"
-        )
+
+        if custom_msg and "version mismatch" in custom_msg.lower():
+            self.title_label.set_markup(
+                "<b><big><span color='#e65100'>⚠ Reinicio Requerido (Driver NVIDIA)</span></big></b>"
+            )
+            self.status_label.set_markup(
+                "<span color='#bf360c'><b>Conflicto de versiones (Driver mismatch)</b></span>\n"
+                "<small>Se ha actualizado el driver pero el kernel sigue usando la versión anterior.\n"
+                "<b>Reinicia el equipo ('sudo reboot')</b> para activar el driver.</small>"
+            )
+        elif custom_msg:
+            self.title_label.set_markup(
+                "<b><big><span color='#c62828'>Problema con el Driver NVIDIA</span></big></b>"
+            )
+            safe_msg = GLib.markup_escape_text(custom_msg)
+            self.status_label.set_markup(f"<small><span color='#555'>{safe_msg}</span></small>")
+        else:
+            self.title_label.set_markup(
+                "<b><big><span color='#c62828'>Sin GPU NVIDIA detectada</span></big></b>"
+            )
+            self.status_label.set_markup(
+                "<span color='#555'>Asegúrate de tener el driver propietario NVIDIA instalado.\n"
+                "Comprueba en la terminal con: <tt>nvidia-smi</tt></span>"
+            )
+
         self.clocks_label.set_text("")
         self.daemon_status_label.set_text("")
+        self.profile_status_label.set_text("")
 
     # =========================================================================
     # PESTAÑA UTILS (Construcción y Lógica de Limpieza)

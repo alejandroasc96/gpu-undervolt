@@ -12,14 +12,17 @@ Flujo:
 
 GPUs con soporte completo en la BD (fallback si nvidia-smi falla parcialmente):
   - NVIDIA GeForce GTX 1660 / 1660 Ti / 1660 Super
-  - NVIDIA GeForce GTX 1060 6G / 3G
+  - NVIDIA GeForce GTX 1060 6G / 3G / Mobile (GP106BM) / Max-Q
   - NVIDIA GeForce RTX 5060 Ti 16G (Blackwell, 2025)
   - NVIDIA GeForce GT 840M (Maxwell, portatil)
 """
 
+import os
+import sys
+import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 
 # --- Data classes -------------------------------------------------------------
@@ -88,6 +91,26 @@ _GPU_DATABASE = {
         "max_gpu_clock": 2100, "max_mem_clock": 4001, "is_mobile": False,
     },
     # Pascal (GTX 10xx)
+    "GTX 1060 MOBILE": {
+        "max_tdp": 80.0, "min_tdp": 60.0,
+        "supports_power_limit": False, "supports_clock_lock": False,
+        "max_gpu_clock": 1670, "max_mem_clock": 4004, "is_mobile": True,
+    },
+    "GTX 1060 WITH MAX-Q": {
+        "max_tdp": 60.0, "min_tdp": 50.0,
+        "supports_power_limit": False, "supports_clock_lock": False,
+        "max_gpu_clock": 1480, "max_mem_clock": 4004, "is_mobile": True,
+    },
+    "GTX 1060 MAX-Q": {
+        "max_tdp": 60.0, "min_tdp": 50.0,
+        "supports_power_limit": False, "supports_clock_lock": False,
+        "max_gpu_clock": 1480, "max_mem_clock": 4004, "is_mobile": True,
+    },
+    "GTX 1060M": {
+        "max_tdp": 80.0, "min_tdp": 60.0,
+        "supports_power_limit": False, "supports_clock_lock": False,
+        "max_gpu_clock": 1670, "max_mem_clock": 4004, "is_mobile": True,
+    },
     "GTX 1060 6": {
         "max_tdp": 120.0, "min_tdp": 75.0,
         "supports_power_limit": True, "supports_clock_lock": True,
@@ -143,42 +166,45 @@ def _parse_int(val: str) -> Optional[int]:
 
 # --- Construccion de perfiles -------------------------------------------------
 
-def _build_mobile_profiles() -> List[PowerProfile]:
-    """Perfiles para GPUs moviles/legacy: solo control PowerMizer."""
+def _build_mobile_profiles(max_gpu_clock: int = 1670) -> List[PowerProfile]:
+    """Perfiles para GPUs moviles/portatiles: control optimizado PowerMizer homogeneo con escritorio."""
+    boost_clk_str = f" (~{max_gpu_clock} MHz)" if max_gpu_clock else ""
     return [
         PowerProfile(
-            name="Ahorro de Energia",
+            name="Ultra Eco",
             emoji="🌱",
             watts=0,
-            description_short="Ahorro de Energia (PowerMizer Adaptativo)",
+            description_short="Ultra Eco (PowerMizer Adaptativo — Máximo Ahorro)",
             description_long=(
-                "• Activa el modo Adaptativo de NVIDIA PowerMizer.\n"
-                "• Reduce voltaje y relojes automaticamente en reposo.\n"
-                "• Ideal para ofimática, video y uso ligero."
+                "• Activa el modo Adaptativo de NVIDIA PowerMizer (baja a ~139 MHz en reposo).\n"
+                "• Reduce notablemente la temperatura y maximiza la duracion de bateria.\n"
+                "• Ideal para ofimatica, navegacion web y ventiladores silenciosos."
             ),
             powermizer_mode=0,
         ),
         PowerProfile(
-            name="Equilibrado",
-            emoji="🍃",
-            watts=0,
-            description_short="Equilibrado (PowerMizer Automatico)",
-            description_long=(
-                "• El driver ajusta frecuencias dinamicamente segun la carga.\n"
-                "• Buen equilibrio entre rendimiento y consumo."
-            ),
-            powermizer_mode=2,
-        ),
-        PowerProfile(
-            name="Maximo Rendimiento",
+            name="Punto Dulce",
             emoji="⚡",
             watts=0,
-            description_short="Maximo Rendimiento (PowerMizer Maximo)",
+            description_short=f"Punto Dulce (PowerMizer Maximo Rendimiento{boost_clk_str})",
             description_long=(
-                "• Mantiene la GPU a maxima frecuencia en todo momento.\n"
-                "• Mejor opcion para gaming y cargas pesadas continuas."
+                f"• Mantiene el estado P0{boost_clk_str} de maximo rendimiento continuo.\n"
+                "• Elimina micro-tirones (stuttering) y caidas de FPS por transiciones de reloj.\n"
+                "• Recomendado para sesiones intensivas de gaming."
             ),
             powermizer_mode=1,
+        ),
+        PowerProfile(
+            name="De Fabrica",
+            emoji="⚙️",
+            watts=0,
+            description_short="De Fabrica (Stock) — Modo Automatico",
+            description_long=(
+                "• Restaura el comportamiento original por defecto del driver NVIDIA.\n"
+                "• El driver gestiona voltajes y frecuencias segun la curva de fabrica.\n"
+                "• Deshace cualquier ajuste previo y desactiva el inicio automatico."
+            ),
+            powermizer_mode=2,
         ),
     ]
 
@@ -243,7 +269,58 @@ def _build_desktop_profiles(max_tdp, min_tdp, max_gpu_clock, max_mem_clock):
     ]
 
 
-# --- Deteccion via nvidia-smi -------------------------------------------------
+# --- Diagnostico y comunicacion con el driver -------------------------------
+
+def check_nvidia_driver_status() -> Tuple[bool, Optional[str]]:
+    """
+    Verifica el estado del driver NVIDIA y de la herramienta nvidia-smi.
+    Retorna:
+      (True, None) si el driver esta operativo.
+      (False, mensaje_error) si se detecta un problema con explicacion y solucion.
+    """
+    if not shutil.which("nvidia-smi"):
+        return (False, (
+            "No se encontró la herramienta 'nvidia-smi' en el sistema.\n"
+            "Asegúrate de tener instalado el driver propietario oficial de NVIDIA."
+        ))
+
+    try:
+        res = subprocess.run(
+            ["nvidia-smi"],
+            capture_output=True, text=True, timeout=8,
+        )
+        if res.returncode == 0:
+            return (True, None)
+
+        output = (res.stderr or "") + "\n" + (res.stdout or "")
+        output_lower = output.lower()
+
+        if "version mismatch" in output_lower:
+            return (False, (
+                "Conflicto de versiones del driver NVIDIA (Driver/library version mismatch):\n"
+                "Las bibliotecas del sistema se han actualizado pero el kernel de Linux aún\n"
+                "tiene cargado en memoria el módulo de la versión anterior.\n\n"
+                "👉 Solución: REINICIA EL EQUIPO ('sudo reboot') para cargar el nuevo driver."
+            ))
+        elif "couldn't communicate" in output_lower or "failed because it couldn't communicate" in output_lower:
+            return (False, (
+                "No se pudo comunicar con el driver NVIDIA:\n"
+                "El driver no está cargado en el kernel. Esto puede deberse a que Secure Boot\n"
+                "está bloqueando módulos no firmados o a una instalación incompleta.\n\n"
+                "👉 Solución: Reinicia el equipo o verifica el estado de Secure Boot en la BIOS."
+            ))
+        elif "no devices were found" in output_lower:
+            return (False, (
+                "nvidia-smi no detectó ninguna tarjeta gráfica NVIDIA compatible en el sistema."
+            ))
+        else:
+            first_err = res.stderr.strip().splitlines()[0] if res.stderr.strip() else "Error al consultar nvidia-smi"
+            return (False, f"{first_err}\nVerifica la instalación del driver NVIDIA.")
+    except subprocess.TimeoutExpired:
+        return (False, "Tiempo de espera agotado al consultar 'nvidia-smi'. El driver podría estar bloqueado.")
+    except Exception as e:
+        return (False, f"Error al ejecutar 'nvidia-smi': {e}")
+
 
 def _run_smi(*args) -> Optional[str]:
     try:
@@ -280,6 +357,24 @@ def _is_mobile_by_name(name: str) -> bool:
     return any(s in name_u for s in ("MAX-Q", "MAX-P", "MOBILE"))
 
 
+def _is_mobile_by_pci() -> bool:
+    """Verifica mediante lspci si alguna GPU NVIDIA instalada es una variante Mobile/Max-Q."""
+    try:
+        res = subprocess.run(
+            ["lspci", "-nnk"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                line_u = line.upper()
+                if "NVIDIA" in line_u and any(tag in line_u for tag in ("VGA", "3D", "DISPLAY")):
+                    if any(s in line_u for s in ("MOBILE", "MAX-Q", "MAX-P", "1C60")):
+                        return True
+    except Exception:
+        pass
+    return False
+
+
 def _find_db_entry(name: str) -> Optional[dict]:
     name_u = name.upper()
     for key in sorted(_GPU_DATABASE.keys(), key=len, reverse=True):
@@ -313,7 +408,13 @@ def detect_gpu(gpu_index: int = 0) -> Optional[GpuInfo]:
     supports_clk = (max_gc_q is not None and max_mc_q is not None)
 
     db        = _find_db_entry(name)
-    is_mobile = _is_mobile_by_name(name) or (db is not None and db.get("is_mobile", False))
+    is_mobile = _is_mobile_by_name(name) or (db is not None and db.get("is_mobile", False)) or _is_mobile_by_pci()
+
+    # Si es movil y el nombre coincidio con desktop en la BD, reasignar a version movil si existe
+    if is_mobile and db is not None and not db.get("is_mobile", False):
+        name_u = name.upper()
+        if "1060" in name_u:
+            db = _GPU_DATABASE.get("GTX 1060 MOBILE", db)
 
     # Si la BD declara explicitamente que no soporta power limit -> override
     if db is not None and not db.get("supports_power_limit", True):
@@ -329,7 +430,7 @@ def detect_gpu(gpu_index: int = 0) -> Optional[GpuInfo]:
     max_mc = max_mc_q if supports_clk else (db["max_mem_clock"] if db else 4000)
 
     if is_mobile or not supports_pl:
-        profiles = _build_mobile_profiles()
+        profiles = _build_mobile_profiles(max_gc)
     else:
         profiles = _build_desktop_profiles(max_tdp, min_tdp, max_gc, max_mc)
 
@@ -364,10 +465,19 @@ def detect_all_gpus() -> List[GpuInfo]:
 # --- Test rapido --------------------------------------------------------------
 
 if __name__ == "__main__":
+    driver_ok, driver_err = check_nvidia_driver_status()
+    if not driver_ok:
+        print(f"\n{'=' * 60}")
+        print("  AVISO: DRIVER NVIDIA NO OPERATIVO")
+        print(f"{'=' * 60}\n")
+        print(driver_err)
+        print(f"\n{'=' * 60}\n")
+        sys.exit(1)
+
     gpus = detect_all_gpus()
     if not gpus:
-        print("No se detecto ninguna GPU NVIDIA.")
-        print("Asegurate de tener el driver NVIDIA propietario instalado.")
+        print("No se detectó ninguna GPU NVIDIA compatible.")
+        print("Comprueba que el driver NVIDIA esté cargado y habilitado.")
     else:
         for gpu in gpus:
             print(f"\n{'=' * 58}")

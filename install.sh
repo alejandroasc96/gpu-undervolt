@@ -19,6 +19,33 @@ if [ -n "$MISSING_DEPS" ]; then
     exit 1
 fi
 
+# 1.1 Diagnóstico de comunicación con el driver NVIDIA
+DRIVER_REBOOT_REQUIRED=0
+if command -v nvidia-smi >/dev/null 2>&1; then
+    SMI_TEST=$(nvidia-smi 2>&1 || true)
+    if echo "$SMI_TEST" | grep -qi "version mismatch"; then
+        DRIVER_REBOOT_REQUIRED=1
+        echo ""
+        echo "╔══════════════════════════════════════════════════════════════════╗"
+        echo "║  ¡AVISO IMPORTANTE: REINICIO DEL EQUIPO REQUERIDO!              ║"
+        echo "╠══════════════════════════════════════════════════════════════════╣"
+        echo "║ Se detectó: 'Driver/library version mismatch' en nvidia-smi.     ║"
+        echo "║ El sistema ha actualizado los paquetes del driver NVIDIA pero   ║"
+        echo "║ el kernel aún tiene cargado en memoria el módulo anterior.       ║"
+        echo "║                                                                  ║"
+        echo "║ La instalación se completará, pero para que el optimizador       ║"
+        echo "║ reconozca tu GPU debes REINICIAR el ordenador:                   ║"
+        echo "║   sudo reboot                                                    ║"
+        echo "╚══════════════════════════════════════════════════════════════════╝"
+        echo ""
+    elif echo "$SMI_TEST" | grep -qi "couldn't communicate"; then
+        echo ""
+        echo "AVISO: nvidia-smi no pudo comunicarse con el driver NVIDIA."
+        echo "Verifica que el driver esté cargado o si Secure Boot está bloqueándolo."
+        echo ""
+    fi
+fi
+
 # 2. Determinar directorios de destino
 APP_DIR="$HOME/.local/share/nvidia-optimizer"
 APPS_MENU_DIR="$HOME/.local/share/applications"
@@ -79,4 +106,9 @@ echo "=================================================="
 echo "Instalacion completada con exito!"
 echo "Acceso directo creado en: $DESKTOP_FILE"
 echo "Disponible tambien en el Menu de Aplicaciones."
+if [ "$DRIVER_REBOOT_REQUIRED" = "1" ]; then
+    echo ""
+    echo "⚠  RECUERDA: Debes reiniciar tu PC ('sudo reboot') para"
+    echo "   activar el nuevo driver y permitir la deteccion de la GPU."
+fi
 echo "=================================================="

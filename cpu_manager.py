@@ -201,7 +201,7 @@ def _build_profiles(info_partial: dict) -> List[CpuProfile]:
             key="eco_plus",
             name="Eco Plus",
             emoji="🌿",
-            description_short=f"Eco Plus — {eco_plus_max_mhz} MHz base, sin Turbo{rapl_ecoplus_str} (máximo ahorro)",
+            description_short=f"Eco Plus <span color='#e5a50a'><b>[Alfa]</b></span> — {eco_plus_max_mhz} MHz base, sin Turbo{rapl_ecoplus_str} (máximo ahorro)",
             description_long=(
                 f"• EPP «power» + Turbo Boost desactivado.\n"
                 f"• Frecuencia máxima: {eco_plus_max_mhz} MHz (reloj base, sin picos).\n"

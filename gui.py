@@ -1074,8 +1074,9 @@ class NvidiaOptimizerApp(Gtk.Window):
                     break
 
             source_txt = "detectado del hardware" if active_profile else "último aplicado"
+            alfa_badge = " <span color='#e5a50a'><b>[Alfa]</b></span>" if target_profile.key == "eco_plus" else ""
             self.cpu_profile_status_label.set_markup(
-                f"Perfil activo: <span color='#1565c0'><b>{target_profile.emoji} {target_profile.name}</b></span> "
+                f"Perfil activo: <span color='#1565c0'><b>{target_profile.emoji} {target_profile.name}</b></span>{alfa_badge} "
                 f"<small>({source_txt})</small>"
             )
         else:

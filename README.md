@@ -11,7 +11,8 @@ Detecta automáticamente cualquier GPU instalada, calcula los perfiles de consum
 La aplicación se organiza en una ventana GTK3 con **pestañas principales**:
 
 1. **Pestaña GPU:** Gestión de energía, límites de TDP, relojes, PowerMizer, persistencia de arranque y telemetría en tiempo real.
-2. **Pestaña Utils (Disco y Sistema):** Diagnóstico de almacenamiento, cálculo en vivo de espacio recuperable, suite de limpieza segura y optimización física de bloques para unidades SSD (TRIM).
+2. **Pestaña CPU:** Gestión energética y undervolt del procesador (HWP, EPP, RAPL, Turbo Boost) con 4 modos optimizados y servicio systemd.
+3. **Pestaña Utils (Disco y Sistema):** Diagnóstico de almacenamiento, cálculo en vivo de espacio recuperable, suite de limpieza segura y optimización física de bloques para unidades SSD (TRIM).
 
 ---
 
@@ -60,6 +61,24 @@ Para tarjetas portátiles donde `nvidia-smi` no permite alterar el límite en va
 | 🌱 **Ultra Eco** | PowerMizer Adaptativo: reduce frecuencias dinámicamente (~139 MHz en reposo) para maximizar la autonomía de la batería. |
 | ⚡ **Punto Dulce** | PowerMizer Rendimiento Máximo (P0): fuerza frecuencias altas constantes para evitar tirones y caídas de FPS en juegos. |
 | ⚙️ **De Fábrica (Stock)** | PowerMizer Automático: restaura la lógica estándar gestionada por el controlador. |
+
+---
+
+## ⚡ Perfiles de Consumo y Optimización (CPU)
+
+La pestaña **CPU** aprovecha los mecanismos nativos del kernel Linux (`intel_pstate`, HWP y RAPL) para optimizar el consumo del procesador de forma segura y **100 % reversible**:
+
+| Perfil | Governor | EPP | Turbo Boost | Límite Frecuencia | Límite RAPL (TDP) | Uso recomendado |
+|:---|:---:|:---:|:---:|:---:|:---:|:---|
+| ⚙️ **De Fábrica** | powersave | balance_performance | ON | Máxima del hardware | Sin límite | Valores originales del sistema. Desactiva el inicio automático. |
+| 🍃 **Óptimo** | powersave | balance_power | ON | Máxima del hardware | ~78% TDP (~35W) | Mismo rendimiento perceptible con ~20% menos de temperatura y ventiladores más silenciosos. |
+| 🌱 **Eco** | powersave | power | ON | 85% de máxima | ~56% TDP (~25W) | Silencioso y fresco bajo multitarea o compilación ligera. |
+| 🌿 **Eco Plus** | powersave | power | **OFF** | Reloj base (~2600 MHz) | ~40% TDP (~18W) | Máximo ahorro de batería/energía. Elimina picos térmicos, ideal para ofimática y streaming. |
+
+> **Seguridad y reversibilidad:**
+> - No modifica voltajes analógicos directamente en registros MSR (sin riesgos de inestabilidad ni corrupción).
+> - Ajusta únicamente políticas energéticas estándar del kernel a través del subsistema `/sys`.
+> - Al desinstalar la aplicación con `uninstall.sh`, la CPU se restaura automáticamente a sus valores originales de fábrica y se elimina el servicio de arranque.
 
 ---
 

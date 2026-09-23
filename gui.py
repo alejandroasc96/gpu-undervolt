@@ -10,7 +10,7 @@ import re
 import subprocess
 import threading
 import tempfile
-from typing import Optional
+from typing import Optional, Tuple, List, Dict
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -18,6 +18,7 @@ from gi.repository import Gtk, GLib, Pango
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 APPLY_SCRIPT = os.path.join(SCRIPT_DIR, "apply.sh")
+CPU_APPLY_SCRIPT = os.path.join(SCRIPT_DIR, "cpu_apply.sh")
 
 # --- Almacenamiento de configuracion persistente -----------------------------
 CONFIG_DIR = os.path.expanduser("~/.config/nvidia-optimizer")
@@ -43,6 +44,29 @@ def _save_profile(gpu_index: int, profile_name: str):
     try:
         with open(path, "w", encoding="utf-8") as f:
             f.write(profile_name)
+    except Exception:
+        pass
+
+def _get_saved_cpu_profile_path() -> str:
+    return os.path.join(CONFIG_DIR, "saved_profile_cpu.txt")
+
+def _get_saved_cpu_profile() -> Optional[str]:
+    path = _get_saved_cpu_profile_path()
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            return None
+    return None
+
+def _save_cpu_profile(profile_key: str):
+    """Guarda el perfil de CPU aplicado."""
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    path = _get_saved_cpu_profile_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(profile_key)
     except Exception:
         pass
 
@@ -81,6 +105,19 @@ except ImportError as e:
     dialog.run()
     sys.exit(1)
 
+try:
+    from cpu_manager import (
+        detect_cpu,
+        read_cpu_state,
+        identify_active_profile,
+        get_cpu_daemon_status,
+        CpuInfo,
+        CpuProfile,
+    )
+    _CPU_MANAGER_OK = True
+except ImportError:
+    _CPU_MANAGER_OK = False
+
 
 class NvidiaOptimizerApp(Gtk.Window):
     def __init__(self):
@@ -113,6 +150,14 @@ class NvidiaOptimizerApp(Gtk.Window):
             self._initial_driver_err = None
             self.gpus = detect_all_gpus()
 
+        # Estado interno CPU
+        self.cpu_info = None
+        self.cpu_profile_radio_buttons = []  # list of (radio_btn, CpuProfile)
+        self._cpu_apply_in_progress = False
+
+        if _CPU_MANAGER_OK:
+            self.cpu_info = detect_cpu()
+
         # Contenedor Principal: Notebook (Pestañas)
         self.notebook = Gtk.Notebook()
         self.notebook.set_tab_pos(Gtk.PositionType.TOP)
@@ -130,7 +175,19 @@ class NvidiaOptimizerApp(Gtk.Window):
         gpu_page = self._build_gpu_page()
         self.notebook.append_page(gpu_page, gpu_tab_box)
 
-        # 2. Pestaña Utils
+        # 2. Pestaña CPU
+        cpu_tab_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        cpu_tab_icon = Gtk.Image.new_from_icon_name("computer", Gtk.IconSize.MENU)
+        cpu_tab_label = Gtk.Label(label="<b>CPU</b>")
+        cpu_tab_label.set_use_markup(True)
+        cpu_tab_box.pack_start(cpu_tab_icon, False, False, 0)
+        cpu_tab_box.pack_start(cpu_tab_label, False, False, 0)
+        cpu_tab_box.show_all()
+
+        cpu_page = self._build_cpu_page()
+        self.notebook.append_page(cpu_page, cpu_tab_box)
+
+        # 3. Pestaña Utils
         utils_tab_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         utils_tab_icon = Gtk.Image.new_from_icon_name("drive-harddisk", Gtk.IconSize.MENU)
         utils_tab_label = Gtk.Label(label="<b>Utils</b>")
@@ -159,6 +216,10 @@ class NvidiaOptimizerApp(Gtk.Window):
         self._refresh_disk_info()
         # Iniciar escaneo de disco en segundo plano al arrancar
         self._start_scan_async(silent=True)
+
+        # Inicialización CPU
+        if _CPU_MANAGER_OK and self.cpu_info:
+            self._cpu_refresh_status()
 
     # =========================================================================
     # PESTAÑA GPU (Construcción y Lógica)
@@ -787,6 +848,355 @@ class NvidiaOptimizerApp(Gtk.Window):
         self.clocks_label.set_text("")
         self.daemon_status_label.set_text("")
         self.profile_status_label.set_text("")
+
+    # =========================================================================
+    # PESTAÑA CPU (Construcción y Lógica de Gestión de Energía)
+    # =========================================================================
+
+    def _build_cpu_page(self):
+        """Construye el panel completo de gestión de energía y undervolt de la CPU."""
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        vbox.set_border_width(10)
+        scrolled.add(vbox)
+
+        # 1. Cabecera / Tarjeta informativa de la CPU
+        header_frame = Gtk.Frame()
+        header_frame.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        header_box.set_border_width(10)
+
+        cpu_icon = Gtk.Image.new_from_icon_name("computer", Gtk.IconSize.DIALOG)
+        header_box.pack_start(cpu_icon, False, False, 0)
+
+        info_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+
+        self.cpu_title_label = Gtk.Label()
+        self.cpu_title_label.set_markup("<b><big>Detectando procesador...</big></b>")
+        self.cpu_title_label.set_xalign(0)
+        info_vbox.pack_start(self.cpu_title_label, False, False, 0)
+
+        self.cpu_profile_status_label = Gtk.Label()
+        self.cpu_profile_status_label.set_xalign(0)
+        info_vbox.pack_start(self.cpu_profile_status_label, False, False, 0)
+
+        self.cpu_status_label = Gtk.Label()
+        self.cpu_status_label.set_xalign(0)
+        info_vbox.pack_start(self.cpu_status_label, False, False, 0)
+
+        self.cpu_telemetry_label = Gtk.Label()
+        self.cpu_telemetry_label.set_xalign(0)
+        info_vbox.pack_start(self.cpu_telemetry_label, False, False, 0)
+
+        self.cpu_daemon_status_label = Gtk.Label()
+        self.cpu_daemon_status_label.set_xalign(0)
+        info_vbox.pack_start(self.cpu_daemon_status_label, False, False, 0)
+
+        header_box.pack_start(info_vbox, True, True, 0)
+
+        cpu_refresh_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
+        cpu_refresh_btn.set_tooltip_text("Actualizar estado de la CPU")
+        cpu_refresh_btn.connect("clicked", lambda b: self._cpu_refresh_status())
+        header_box.pack_end(cpu_refresh_btn, False, False, 0)
+
+        header_frame.add(header_box)
+        vbox.pack_start(header_frame, False, False, 0)
+
+        # 2. Sección de Selección de Perfiles
+        self.cpu_profiles_frame = Gtk.Frame(label=" Perfiles de Consumo CPU ")
+        cpu_profiles_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        cpu_profiles_vbox.set_border_width(10)
+
+        self.cpu_profile_radio_buttons = []
+        first_rb = None
+
+        if self.cpu_info and self.cpu_info.profiles:
+            for profile in self.cpu_info.profiles:
+                p_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+
+                rb = Gtk.RadioButton.new_from_widget(first_rb)
+                if first_rb is None:
+                    first_rb = rb
+
+                rb_label = Gtk.Label()
+                rb_label.set_markup(f"<b>{profile.emoji} {profile.description_short}</b>")
+                rb_label.set_xalign(0)
+                rb.add(rb_label)
+
+                desc_label = Gtk.Label()
+                desc_label.set_markup(
+                    f"<small><span color='#555'>{profile.description_long}</span></small>"
+                )
+                desc_label.set_xalign(0)
+                desc_label.set_margin_left(24)
+
+                p_box.pack_start(rb, False, False, 0)
+                p_box.pack_start(desc_label, False, False, 0)
+                cpu_profiles_vbox.pack_start(p_box, False, False, 0)
+
+                self.cpu_profile_radio_buttons.append((rb, profile))
+        else:
+            no_cpu_lbl = Gtk.Label(label="No se detectaron perfiles compatibles para esta CPU.")
+            cpu_profiles_vbox.pack_start(no_cpu_lbl, False, False, 0)
+
+        self.cpu_profiles_frame.add(cpu_profiles_vbox)
+        vbox.pack_start(self.cpu_profiles_frame, False, False, 0)
+
+        # 3. Sección de Persistencia (Systemd)
+        cpu_persist_frame = Gtk.Frame(label=" Inicio Automático (Daemon / Systemd) ")
+        cpu_persist_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        cpu_persist_box.set_border_width(8)
+
+        self.cb_cpu_daemon = Gtk.CheckButton(
+            label="Activar este perfil en cada arranque del sistema (servicio systemd)"
+        )
+        self.cb_cpu_daemon.set_tooltip_text(
+            "Crea el servicio cpu-power-optimizer.service para aplicar el perfil "
+            "automáticamente al iniciar el equipo."
+        )
+        cpu_persist_box.pack_start(self.cb_cpu_daemon, False, False, 0)
+
+        cpu_daemon_note = Gtk.Label()
+        cpu_daemon_note.set_markup(
+            "<small><span color='#555'>Si marcas esta opción, el perfil se mantendrá "
+            "tras reiniciar. Al pulsar «De Fábrica», el daemon se desactivará automáticamente.</span></small>"
+        )
+        cpu_daemon_note.set_xalign(0)
+        cpu_daemon_note.set_margin_left(24)
+        cpu_persist_box.pack_start(cpu_daemon_note, False, False, 0)
+
+        cpu_persist_frame.add(cpu_persist_box)
+        vbox.pack_start(cpu_persist_frame, False, False, 0)
+
+        # 4. Botón de Aplicar
+        cpu_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.cpu_apply_btn = Gtk.Button(label=" ⚡ Aplicar Configuración CPU ")
+        self.cpu_apply_btn.get_style_context().add_class("suggested-action")
+        self.cpu_apply_btn.connect("clicked", self._on_apply_cpu_clicked)
+        cpu_btn_box.pack_start(self.cpu_apply_btn, False, False, 0)
+
+        self.cpu_spinner = Gtk.Spinner()
+        cpu_btn_box.pack_start(self.cpu_spinner, False, False, 0)
+
+        vbox.pack_start(cpu_btn_box, False, False, 0)
+
+        # 5. Registro de Salida (Expander)
+        self.cpu_log_expander = Gtk.Expander(label="Detalles y registro de operaciones (CPU)")
+        cpu_log_scroll = Gtk.ScrolledWindow()
+        cpu_log_scroll.set_min_content_height(100)
+        cpu_log_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+
+        self.cpu_log_view = Gtk.TextView()
+        self.cpu_log_view.set_editable(False)
+        self.cpu_log_view.set_monospace(True)
+        self.cpu_log_buffer = self.cpu_log_view.get_buffer()
+        cpu_log_scroll.add(self.cpu_log_view)
+
+        self.cpu_log_expander.add(cpu_log_scroll)
+        vbox.pack_start(self.cpu_log_expander, False, False, 0)
+
+        return scrolled
+
+    def _append_cpu_log(self, text: str):
+        """Añade una línea al buffer de log de la CPU."""
+        end_iter = self.cpu_log_buffer.get_end_iter()
+        self.cpu_log_buffer.insert(end_iter, text + "\n")
+        self.cpu_log_view.scroll_to_iter(self.cpu_log_buffer.get_end_iter(), 0.0, False, 0.0, 0.0)
+
+    def _get_selected_cpu_profile(self) -> Optional[CpuProfile]:
+        for rb, profile in self.cpu_profile_radio_buttons:
+            if rb.get_active():
+                return profile
+        return None
+
+    def _cpu_refresh_status(self):
+        """Actualiza la telemetría e indicadores de estado de la CPU."""
+        if not _CPU_MANAGER_OK or not self.cpu_info:
+            self.cpu_title_label.set_markup("<b><big><span color='#c62828'>Gestor de CPU no disponible</span></big></b>")
+            return
+
+        cpu = self.cpu_info
+        self.cpu_title_label.set_markup(f"<b><big>{cpu.name}</big></b>")
+
+        # Telemetría y estado actual
+        state = read_cpu_state()
+        temp_str = f"{state['temp_celsius']} °C" if state.get("temp_celsius") is not None else "N/A"
+        freq_str = f"{state['cur_freq_mhz']} MHz" if state.get("cur_freq_mhz", 0) > 0 else "N/A"
+        max_f_str = f"{state['max_freq_mhz']} MHz" if state.get("max_freq_mhz", 0) > 0 else "N/A"
+        turbo_str = "ON" if state.get("turbo", True) else "OFF"
+        rapl_str = f" | TDP: <b>{state['rapl_limit_w']:.0f} W</b>" if state.get("rapl_limit_w", 0) > 0 else ""
+
+        self.cpu_status_label.set_markup(
+            f"<b>Temp:</b> {temp_str}   |   "
+            f"<b>Frecuencia actual:</b> {freq_str}   |   "
+            f"<b>Máx:</b> {max_f_str}"
+        )
+
+        self.cpu_telemetry_label.set_markup(
+            f"<b>Governor:</b> {state.get('governor', 'powersave')}   |   "
+            f"<b>EPP:</b> {state.get('epp', 'balance_performance')}   |   "
+            f"<b>Turbo:</b> {turbo_str}{rapl_str}"
+        )
+
+        # Estado del daemon
+        daemon_active = get_cpu_daemon_status()
+        self.cb_cpu_daemon.set_active(daemon_active)
+
+        if daemon_active:
+            self.cpu_daemon_status_label.set_markup(
+                "Inicio automático: <span color='#2e7d32'><b>ACTIVADO</b></span> "
+                "(se mantendrá tras reiniciar el equipo)"
+            )
+        else:
+            self.cpu_daemon_status_label.set_markup(
+                "Inicio automático: <span color='#757575'><b>DESACTIVADO</b></span> "
+                "(el ajuste solo se aplica en esta sesión)"
+            )
+
+        # Perfil activo
+        active_profile = identify_active_profile(cpu)
+        saved_key = _get_saved_cpu_profile()
+
+        target_profile = active_profile
+        if target_profile is None and saved_key:
+            for p in cpu.profiles:
+                if p.key == saved_key:
+                    target_profile = p
+                    break
+
+        if target_profile:
+            for rb, p in self.cpu_profile_radio_buttons:
+                if p.key == target_profile.key:
+                    if not rb.get_active():
+                        rb.set_active(True)
+                    break
+
+            source_txt = "detectado del hardware" if active_profile else "último aplicado"
+            self.cpu_profile_status_label.set_markup(
+                f"Perfil activo: <span color='#1565c0'><b>{target_profile.emoji} {target_profile.name}</b></span> "
+                f"<small>({source_txt})</small>"
+            )
+        else:
+            self.cpu_profile_status_label.set_markup(
+                "Perfil activo: <span color='#e65100'><b>Personalizado / No identificado</b></span>"
+            )
+
+    def execute_cpu_privileged(self, profile: CpuProfile, enable_daemon: bool) -> Tuple[bool, str]:
+        """Ejecuta cpu_apply.sh con privilegios root (pkexec o zenity fallback)."""
+        args = [
+            CPU_APPLY_SCRIPT,
+            profile.key,
+            "1" if enable_daemon else "0",
+            SCRIPT_DIR,
+        ]
+
+        # 1. Intentar pkexec
+        try:
+            proc = subprocess.run(["pkexec"] + args, capture_output=True, text=True)
+            if proc.returncode == 0:
+                return True, proc.stdout
+            elif proc.returncode in (126, 127):
+                pass
+            else:
+                stderr_l = proc.stderr.lower()
+                if "dismissed" in stderr_l or proc.returncode == 1:
+                    return False, "Operación cancelada por el usuario."
+        except Exception:
+            pass
+
+        # 2. Fallback zenity + sudo -S
+        try:
+            res = subprocess.run(
+                ["zenity", "--password",
+                 "--title=Permisos de Administrador",
+                 "--text=Introduce tu contraseña para aplicar la configuración de energía de la CPU:"],
+                capture_output=True, text=True
+            )
+            if res.returncode != 0:
+                return False, "Operación cancelada."
+            pwd = res.stdout.strip()
+            if not pwd:
+                return False, "Contraseña vacía."
+
+            proc = subprocess.run(
+                ["sudo", "-S"] + args,
+                input=pwd + "\n", capture_output=True, text=True
+            )
+            if proc.returncode == 0:
+                return True, proc.stdout
+            else:
+                return False, f"Error al aplicar: {proc.stderr}"
+        except Exception as e:
+            return False, str(e)
+
+    def _on_apply_cpu_clicked(self, widget):
+        """Manejador del botón aplicar configuración de CPU."""
+        profile = self._get_selected_cpu_profile()
+        if profile is None:
+            return
+
+        enable_daemon = self.cb_cpu_daemon.get_active()
+        if profile.key == "factory":
+            enable_daemon = False
+
+        self.cpu_apply_btn.set_sensitive(False)
+        self.cpu_spinner.start()
+        self.cpu_log_expander.set_expanded(True)
+        self._append_cpu_log(f"\n=== APLICANDO PERFIL CPU: {profile.emoji} {profile.name} ===")
+
+        def cpu_worker():
+            ok, output = self.execute_cpu_privileged(profile, enable_daemon)
+
+            def on_finish():
+                self.cpu_spinner.stop()
+                self.cpu_apply_btn.set_sensitive(True)
+                for line in output.splitlines():
+                    self._append_cpu_log(line)
+
+                self._cpu_refresh_status()
+
+                if ok:
+                    _save_cpu_profile(profile.key)
+                    if profile.key == "factory":
+                        daemon_msg = (
+                            "Se ha restaurado el estado De Fábrica original y se ha "
+                            "desactivado el inicio automático de la CPU."
+                        )
+                    else:
+                        daemon_msg = (
+                            "El servicio de arranque queda ACTIVADO (cpu-power-optimizer.service)."
+                            if enable_daemon else
+                            "El servicio de arranque queda DESACTIVADO (solo activo en esta sesión)."
+                        )
+
+                    dlg = Gtk.MessageDialog(
+                        transient_for=self,
+                        flags=0,
+                        message_type=Gtk.MessageType.INFO,
+                        buttons=Gtk.ButtonsType.OK,
+                        text=f"¡Perfil CPU «{profile.name}» aplicado con éxito!",
+                    )
+                    dlg.format_secondary_text(daemon_msg)
+                    dlg.run()
+                    dlg.destroy()
+                else:
+                    if "cancelada" not in output.lower():
+                        dlg = Gtk.MessageDialog(
+                            transient_for=self,
+                            flags=0,
+                            message_type=Gtk.MessageType.ERROR,
+                            buttons=Gtk.ButtonsType.OK,
+                            text="Error al aplicar el perfil de CPU",
+                        )
+                        dlg.format_secondary_text(output)
+                        dlg.run()
+                        dlg.destroy()
+
+            GLib.idle_add(on_finish)
+
+        threading.Thread(target=cpu_worker, daemon=True).start()
 
     # =========================================================================
     # PESTAÑA UTILS (Construcción y Lógica de Limpieza)

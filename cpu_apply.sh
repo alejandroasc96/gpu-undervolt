@@ -6,7 +6,8 @@
 #
 # Parámetros:
 #   perfil        — Identificador del perfil: factory | optimal | eco | eco_plus
-#   enable_daemon — 1 = crear/activar servicio systemd; 0 = eliminar servicio
+#   enable_daemon — 1 = crear/activar servicio systemd; 0 = eliminar servicio;
+#                   apply_only = solo aplicar ajustes sysfs (uso interno del servicio)
 #   app_dir       — Ruta de instalación de la app (para el ExecStart del servicio)
 #
 # Mecanismos utilizados (todos 100 % reversibles via sysfs):
@@ -206,7 +207,12 @@ fi
 # Resolver ruta al script dentro del directorio de instalación
 SCRIPT_PATH="${APP_DIR}/cpu_apply.sh"
 
-if [ "$ENABLE_DAEMON" = "1" ] && [ "$PROFILE" != "factory" ]; then
+# Si el script se ejecuta invocado por systemd (INVOCATION_ID presente) o con
+# ENABLE_DAEMON="apply_only", solo se aplican los parámetros de hardware sysfs
+# y no se modifica ni elimina la unidad de systemd.
+if [ -n "${INVOCATION_ID:-}" ] || [ "$ENABLE_DAEMON" = "apply_only" ]; then
+    echo "=== Ejecución como servicio systemd: omitiendo gestión de unidad ==="
+elif [ "$ENABLE_DAEMON" = "1" ] && [ "$PROFILE" != "factory" ]; then
     echo "=== Creando servicio systemd: ${SERVICE_NAME} ==="
     cat > "$SERVICE_FILE" << UNIT_EOF
 [Unit]
@@ -216,8 +222,8 @@ After=multi-user.target
 
 [Service]
 Type=oneshot
-# enable_daemon=0 para evitar recursión en la gestión del propio servicio
-ExecStart=/bin/bash ${SCRIPT_PATH} ${PROFILE} 0 ${APP_DIR}
+# apply_only: solo aplica los límites sysfs en el arranque sin reescribir ni borrar el servicio
+ExecStart=/bin/bash ${SCRIPT_PATH} ${PROFILE} apply_only ${APP_DIR}
 RemainAfterExit=yes
 
 [Install]

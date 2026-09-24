@@ -443,31 +443,39 @@ def identify_active_profile(cpu_info: CpuInfo) -> Optional[CpuProfile]:
     comparando el estado real del hardware con los parámetros de cada perfil.
     """
     state = read_cpu_state()
-    cur_epp   = state.get("epp", "")
-    cur_turbo = state.get("turbo", True)
-    cur_epb   = state.get("epb", -1)
-    max_info  = cpu_info.max_freq_mhz
+    cur_epp      = state.get("epp", "")
+    cur_turbo    = state.get("turbo", True)
+    cur_epb      = state.get("epb", -1)
+    cur_max_freq = state.get("max_freq_mhz", 0)
+    cur_rapl     = state.get("rapl_limit_w", 0.0)
+    max_info     = cpu_info.max_freq_mhz
 
-    # Eco Plus: sin Turbo, EPB máximo
-    if not cur_turbo and cur_epb >= 13:
+    # 1. Eco Plus: sin Turbo
+    if not cur_turbo:
         for p in cpu_info.profiles:
             if p.key == "eco_plus":
                 return p
 
-    # Eco: EPP power y EPB alto, con Turbo
-    if cur_epp == "power" and cur_turbo and cur_epb >= 10:
+    # 2. Eco: frecuencia máxima limitada (~85 % del máx) o EPP power con Turbo
+    is_eco_freq = 0 < cur_max_freq <= int(max_info * 0.90)
+    is_eco_epp  = (cur_epp == "power")
+
+    if cur_turbo and (is_eco_freq or (is_eco_epp and cur_epb >= 10)):
         for p in cpu_info.profiles:
             if p.key == "eco":
                 return p
 
-    # Óptimo: EPP balance_power
-    if cur_epp == "balance_power" and cur_turbo:
+    # 3. Óptimo: EPP balance_power o RAPL intermedio con frecuencia completa
+    is_opt_rapl = (30.0 < cur_rapl <= 40.0) if cpu_info.has_rapl else False
+    if cur_turbo and (cur_epp == "balance_power" or is_opt_rapl):
         for p in cpu_info.profiles:
             if p.key == "optimal":
                 return p
 
-    # De Fábrica: EPP balance_performance
-    if cur_epp in ("balance_performance", "default", "performance"):
+    # 4. De Fábrica: frecuencia al 100 %, sin límite RAPL y EPP balance_performance/performance
+    is_full_freq = cur_max_freq >= (max_info - 100)
+    is_full_rapl = (cur_rapl == 0.0 or cur_rapl >= (cpu_info.rapl_max_uw / 1e6 - 2.0))
+    if cur_turbo and is_full_freq and is_full_rapl and cur_epp in ("balance_performance", "default", "performance"):
         for p in cpu_info.profiles:
             if p.key == "factory":
                 return p

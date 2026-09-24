@@ -149,6 +149,20 @@ case "$PROFILE" in
         ;;
 esac
 
+# --------------------------------------------------------------------------
+# Sincronización con power-profiles-daemon (Cinnamon / GNOME / FreeDesktop)
+# --------------------------------------------------------------------------
+if command -v powerprofilesctl >/dev/null 2>&1; then
+    case "$PROFILE" in
+        eco|eco_plus)
+            powerprofilesctl set power-saver 2>/dev/null || true
+            ;;
+        optimal|factory)
+            powerprofilesctl set balanced 2>/dev/null || true
+            ;;
+    esac
+fi
+
 echo "=== Aplicando perfil CPU: ${PROFILE} ==="
 echo "    Governor:  ${GOVERNOR}"
 echo "    EPP:       ${EPP_VAL}  (disponible: ${HAS_EPP})"

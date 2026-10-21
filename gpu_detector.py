@@ -92,23 +92,23 @@ _GPU_DATABASE = {
     },
     # Pascal (GTX 10xx)
     "GTX 1060 MOBILE": {
-        "max_tdp": 80.0, "min_tdp": 60.0,
-        "supports_power_limit": False, "supports_clock_lock": False,
+        "max_tdp": 78.0, "min_tdp": 50.0,
+        "supports_power_limit": True, "supports_clock_lock": False,
         "max_gpu_clock": 1670, "max_mem_clock": 4004, "is_mobile": True,
     },
     "GTX 1060 WITH MAX-Q": {
         "max_tdp": 60.0, "min_tdp": 50.0,
-        "supports_power_limit": False, "supports_clock_lock": False,
+        "supports_power_limit": True, "supports_clock_lock": False,
         "max_gpu_clock": 1480, "max_mem_clock": 4004, "is_mobile": True,
     },
     "GTX 1060 MAX-Q": {
         "max_tdp": 60.0, "min_tdp": 50.0,
-        "supports_power_limit": False, "supports_clock_lock": False,
+        "supports_power_limit": True, "supports_clock_lock": False,
         "max_gpu_clock": 1480, "max_mem_clock": 4004, "is_mobile": True,
     },
     "GTX 1060M": {
-        "max_tdp": 80.0, "min_tdp": 60.0,
-        "supports_power_limit": False, "supports_clock_lock": False,
+        "max_tdp": 78.0, "min_tdp": 50.0,
+        "supports_power_limit": True, "supports_clock_lock": False,
         "max_gpu_clock": 1670, "max_mem_clock": 4004, "is_mobile": True,
     },
     "GTX 1060 6": {
@@ -209,30 +209,36 @@ def _build_mobile_profiles(max_gpu_clock: int = 1670) -> List[PowerProfile]:
     ]
 
 
-def _build_desktop_profiles(max_tdp, min_tdp, max_gpu_clock, max_mem_clock):
-    """Calcula los 4 perfiles estandar para GPUs de escritorio con power limit."""
+def _build_desktop_profiles(max_tdp, min_tdp, max_gpu_clock, max_mem_clock, supports_clock_lock: bool = True):
+    """Calcula los 4 perfiles estandar para GPUs con power limit."""
     eco_w  = max(_round5(max_tdp * 0.58), int(min_tdp))
     eff_w  = max(_round5(max_tdp * 0.67), int(min_tdp) + 5)
     swt_w  = max(_round5(max_tdp * 0.75), int(min_tdp) + 10)
     stk_w  = int(max_tdp)
 
-    eco_clk = max(300, _round50(max_gpu_clock * 0.31))
+    eco_clk = max(300, _round50(max_gpu_clock * 0.31)) if supports_clock_lock else 0
 
     eco_pct = int((1 - eco_w / max_tdp) * 100)
     eff_pct = int((1 - eff_w / max_tdp) * 100)
     swt_pct = int((1 - swt_w / max_tdp) * 100)
+
+    eco_short = f"Ultra Eco — {eco_w} W + {eco_clk} MHz (Maximo Ahorro)" if supports_clock_lock else f"Ultra Eco — {eco_w} W (Maximo Ahorro)"
+    eco_long = (
+        f"• Acota el reloj a {eco_clk} MHz y activa PowerMizer Ahorro.\n"
+        f"• -{eco_pct}% de consumo. Ideal para YouTube, escritorio y ofimatica."
+    ) if supports_clock_lock else (
+        f"• Limita la potencia a {eco_w} W y activa PowerMizer Ahorro.\n"
+        f"• -{eco_pct}% de consumo. Ideal para multimedia, navegacion y ofimatica."
+    )
 
     return [
         PowerProfile(
             name="Ultra Eco",
             emoji="🌱",
             watts=eco_w,
-            description_short=f"Ultra Eco — {eco_w} W + {eco_clk} MHz (Maximo Ahorro)",
-            description_long=(
-                f"• Acota el reloj a {eco_clk} MHz y activa PowerMizer Ahorro.\n"
-                f"• -{eco_pct}% de consumo. Ideal para YouTube, escritorio y ofimatica."
-            ),
-            eco_min_clock=300,
+            description_short=eco_short,
+            description_long=eco_long,
+            eco_min_clock=300 if supports_clock_lock else 0,
             eco_max_clock=eco_clk,
             powermizer_mode=0,
         ),
@@ -425,22 +431,29 @@ def detect_gpu(gpu_index: int = 0) -> Optional[GpuInfo]:
     min_tdp = min_tdp_q if supports_pl else (db["min_tdp"] if db else 0.0)
     max_tdp = max_tdp_q if supports_pl else (db["max_tdp"] if db else 0.0)
 
+    # Ajustar min_tdp si nvidia-smi reporta un valor irrealmente bajo (ej. 1.0 W en GPUs moviles)
+    if min_tdp < 30.0 and max_tdp >= 60.0:
+        min_tdp = db.get("min_tdp", 50.0) if db else _round5(max_tdp * 0.60)
+
     # Relojes: nvidia-smi primero, BD como fallback
     max_gc = max_gc_q if supports_clk else (db["max_gpu_clock"] if db else 1500)
     max_mc = max_mc_q if supports_clk else (db["max_mem_clock"] if db else 4000)
 
-    if is_mobile or not supports_pl:
+    # Clock lock: Pascal (GTX 10xx) no soporta -lgc; verificar si la BD lo prohíbe
+    can_lock_clock = supports_clk and (db.get("supports_clock_lock", True) if db else not is_mobile)
+
+    if not supports_pl:
         profiles = _build_mobile_profiles(max_gc)
     else:
-        profiles = _build_desktop_profiles(max_tdp, min_tdp, max_gc, max_mc)
+        profiles = _build_desktop_profiles(max_tdp, min_tdp, max_gc, max_mc, supports_clock_lock=can_lock_clock)
 
     return GpuInfo(
         name=name,
         gpu_index=gpu_index,
         max_tdp=max_tdp,
         min_tdp=min_tdp,
-        supports_power_limit=supports_pl and not is_mobile,
-        supports_clock_lock=(supports_clk or bool(db and db.get("supports_clock_lock"))) and not is_mobile,
+        supports_power_limit=supports_pl,
+        supports_clock_lock=can_lock_clock,
         max_gpu_clock=max_gc,
         max_mem_clock=max_mc,
         is_mobile=is_mobile,

@@ -103,16 +103,16 @@ if [ "$ECO_MAX_CLOCK" != "0" ] && [ "${ECO_MAX_CLOCK}" -gt 0 ] 2>/dev/null; then
         cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=NVIDIA Power Limit GPU${GPU_INDEX} (${WATTS}W Eco - ${ECO_MAX_CLOCK}MHz)
-After=multi-user.target
+After=multi-user.target suspend.target hibernate.target hybrid-sleep.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/nvidia-smi -i ${GPU_INDEX} -pm 1
 ExecStart=/usr/bin/nvidia-smi -i ${GPU_INDEX} -pl ${WATTS}
-ExecStart=/usr/bin/nvidia-smi -i ${GPU_INDEX} -lgc ${ECO_MIN_CLOCK},${ECO_MAX_CLOCK}
+ExecStart=-/usr/bin/nvidia-smi -i ${GPU_INDEX} -lgc ${ECO_MIN_CLOCK},${ECO_MAX_CLOCK}
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target suspend.target hibernate.target hybrid-sleep.target
 EOF
         /bin/systemctl daemon-reload
         /bin/systemctl enable "$SERVICE_NAME"
@@ -129,16 +129,16 @@ else
         cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=NVIDIA Power Limit GPU${GPU_INDEX} (${WATTS}W)
-After=multi-user.target
+After=multi-user.target suspend.target hibernate.target hybrid-sleep.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/nvidia-smi -i ${GPU_INDEX} -pm 1
-ExecStart=/usr/bin/nvidia-smi -i ${GPU_INDEX} -rgc
+ExecStart=-/usr/bin/nvidia-smi -i ${GPU_INDEX} -rgc
 ExecStart=/usr/bin/nvidia-smi -i ${GPU_INDEX} -pl ${WATTS}
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target suspend.target hibernate.target hybrid-sleep.target
 EOF
         /bin/systemctl daemon-reload
         /bin/systemctl enable "$SERVICE_NAME"

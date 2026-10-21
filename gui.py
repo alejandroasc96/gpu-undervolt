@@ -1026,7 +1026,13 @@ class NvidiaOptimizerApp(Gtk.Window):
         freq_str = f"{state['cur_freq_mhz']} MHz" if state.get("cur_freq_mhz", 0) > 0 else "N/A"
         max_f_str = f"{state['max_freq_mhz']} MHz" if state.get("max_freq_mhz", 0) > 0 else "N/A"
         turbo_str = "ON" if state.get("turbo", True) else "OFF"
-        rapl_str = f" | TDP: <b>{state['rapl_limit_w']:.0f} W</b>" if state.get("rapl_limit_w", 0) > 0 else ""
+        rapl_str = ""
+        if state.get("rapl_limit_w", 0) > 0:
+            pl2 = state.get("rapl_pl2_w", 0)
+            if pl2 > 0 and pl2 < 190:
+                rapl_str = f" | TDP: <b>{state['rapl_limit_w']:.0f} W</b> (PL2: <b>{pl2:.0f} W</b>)"
+            else:
+                rapl_str = f" | TDP: <b>{state['rapl_limit_w']:.0f} W</b>"
 
         self.cpu_status_label.set_markup(
             f"<b>Temp:</b> {temp_str}   |   "
@@ -1047,7 +1053,7 @@ class NvidiaOptimizerApp(Gtk.Window):
         if daemon_active:
             self.cpu_daemon_status_label.set_markup(
                 "Inicio automático: <span color='#2e7d32'><b>ACTIVADO</b></span> "
-                "(se mantendrá tras reiniciar el equipo)"
+                "(se mantendrá tras reiniciar o suspender el equipo)"
             )
         else:
             self.cpu_daemon_status_label.set_markup(

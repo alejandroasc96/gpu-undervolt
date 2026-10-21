@@ -39,6 +39,7 @@ class CpuProfile:
     turbo: bool               # True = Turbo habilitado, False = sin Turbo
     max_freq_pct: float       # Porcentaje de la frecuencia máxima a aplicar (1.0 = sin límite)
     rapl_long_term_w: float   # Límite RAPL long_term en vatios. 0 = sin límite.
+    rapl_peak_w: float = 0.0  # Límite RAPL short_term (PL2) en vatios. 0 = sin límite.
 
 
 @dataclass
@@ -126,9 +127,13 @@ def _build_profiles(info_partial: dict) -> List[CpuProfile]:
     rapl_max_w = rapl_max / 1_000_000 if rapl_max > 0 else 45.0
 
     # Perfiles de RAPL (solo si está disponible)
-    rapl_opt_w      = round(rapl_max_w * 0.78, 1)  # ~78% → -22% calor
-    rapl_eco_w      = round(rapl_max_w * 0.56, 1)  # ~56% → reducción notable
-    rapl_eco_plus_w = round(rapl_max_w * 0.40, 1)  # ~40% → máximo ahorro
+    rapl_opt_w      = round(rapl_max_w * 0.78, 1)  # ~78% → ~35W sostenido (PL1)
+    rapl_eco_w      = round(rapl_max_w * 0.56, 1)  # ~56% → ~25W sostenido (PL1)
+    rapl_eco_plus_w = round(rapl_max_w * 0.40, 1)  # ~40% → ~18W sostenido (PL1)
+
+    rapl_opt_pl2_w      = round(rapl_max_w * 1.0, 1)   # 100% → 45W ráfaga (PL2)
+    rapl_eco_pl2_w      = round(rapl_max_w * 0.93, 1)  # ~93% → ~42W ráfaga (PL2)
+    rapl_eco_plus_pl2_w = round(rapl_max_w * 0.50, 1)  # ~50% → ~22.5W ráfaga (PL2)
 
     # EPP: si no hay EPP usar governor como aproximación
     epp_opt      = "balance_power"  if has_epp else "powersave"
@@ -160,6 +165,7 @@ def _build_profiles(info_partial: dict) -> List[CpuProfile]:
             turbo=True,
             max_freq_pct=1.0,
             rapl_long_term_w=0.0,
+            rapl_peak_w=0.0,
         ),
         CpuProfile(
             key="optimal",
@@ -168,7 +174,7 @@ def _build_profiles(info_partial: dict) -> List[CpuProfile]:
             description_short=f"Óptimo — EPP ahorro{rapl_opt_str} (mismo rendimiento perceptible)",
             description_long=(
                 f"• EPP «balance_power»: el firmware prioriza ahorro sin sacrificar respuesta.\n"
-                f"• {'Límite TDP ' + str(rapl_opt_w) + ' W (long-term).' if has_rapl else 'Sin límite de TDP.'}"
+                f"• {'Límite TDP ' + str(rapl_opt_w) + ' W (PL1) y ráfagas hasta ' + str(rapl_opt_pl2_w) + ' W (PL2).' if has_rapl else 'Sin límite de TDP.'}"
                 f" Turbo Boost activo para picos de carga.\n"
                 "• Reduce temperatura y ruido de ventiladores ~15-20 % en uso normal."
             ),
@@ -178,17 +184,18 @@ def _build_profiles(info_partial: dict) -> List[CpuProfile]:
             turbo=True,
             max_freq_pct=1.0,
             rapl_long_term_w=rapl_opt_w if has_rapl else 0.0,
+            rapl_peak_w=rapl_opt_pl2_w if has_rapl else 0.0,
         ),
         CpuProfile(
             key="eco",
             name="Eco",
             emoji="🌱",
-            description_short=f"Eco — {eco_max_mhz} MHz máx.{rapl_eco_str} (eficiente y silencioso)",
+            description_short=f"Eco — {eco_max_mhz} MHz máx.{rapl_eco_str} (eficiente, ideal juegos indie)",
             description_long=(
                 f"• EPP «power»: máxima prioridad al ahorro en cada P-State.\n"
                 f"• Frecuencia limitada a {eco_max_mhz} MHz (85 % del máx.). Turbo activo.\n"
-                f"• {'TDP sostenido ' + str(rapl_eco_w) + ' W.' if has_rapl else ''}"
-                " Ideal para multitarea, compilación ligera y trabajo creativo."
+                f"• {'TDP sostenido ' + str(rapl_eco_w) + ' W (PL1) y ráfagas hasta ' + str(rapl_eco_pl2_w) + ' W (PL2).' if has_rapl else ''}\n"
+                "• Rendimiento equilibrado: ahorra energía y calor manteniendo fluidez en juegos indie."
             ),
             governor="powersave",
             epp=epp_eco,
@@ -196,6 +203,7 @@ def _build_profiles(info_partial: dict) -> List[CpuProfile]:
             turbo=True,
             max_freq_pct=0.85,
             rapl_long_term_w=rapl_eco_w if has_rapl else 0.0,
+            rapl_peak_w=rapl_eco_pl2_w if has_rapl else 0.0,
         ),
         CpuProfile(
             key="eco_plus",
@@ -203,10 +211,10 @@ def _build_profiles(info_partial: dict) -> List[CpuProfile]:
             emoji="🌿",
             description_short=f"Eco Plus <span color='#e5a50a'><b>[Alfa]</b></span> — {eco_plus_max_mhz} MHz base, sin Turbo{rapl_ecoplus_str} (máximo ahorro)",
             description_long=(
-                f"• EPP «power» + Turbo Boost desactivado.\n"
+                f"• EPP «power» + Turbo Boost completamente desactivado.\n"
                 f"• Frecuencia máxima: {eco_plus_max_mhz} MHz (reloj base, sin picos).\n"
-                f"• {'TDP ' + str(rapl_eco_plus_w) + ' W máx.' if has_rapl else ''}"
-                " Recomendado para ofimática, navegación y reposo activo con batería."
+                f"• {'TDP ' + str(rapl_eco_plus_w) + ' W (PL1) y ráfagas estrictas a ' + str(rapl_eco_plus_pl2_w) + ' W (PL2).' if has_rapl else ''}\n"
+                "• Prioridad máxima al ahorro energético y silencio: para ofimática, navegación y batería."
             ),
             governor="powersave",
             epp=epp_eco,
@@ -214,6 +222,7 @@ def _build_profiles(info_partial: dict) -> List[CpuProfile]:
             turbo=False,
             max_freq_pct=0.0,   # 0.0 = usar base_freq directamente
             rapl_long_term_w=rapl_eco_plus_w if has_rapl else 0.0,
+            rapl_peak_w=rapl_eco_plus_pl2_w if has_rapl else 0.0,
         ),
     ]
     return profiles
@@ -373,6 +382,9 @@ def read_cpu_state() -> dict:
     rapl_uw = _read_int(f"{RAPL_PKG_PATH}/constraint_0_power_limit_uw") or 0
     rapl_w  = rapl_uw / 1_000_000 if rapl_uw > 0 else 0.0
 
+    rapl_pl2_uw = _read_int(f"{RAPL_PKG_PATH}/constraint_1_power_limit_uw") or 0
+    rapl_pl2_w  = rapl_pl2_uw / 1_000_000 if rapl_pl2_uw > 0 else 0.0
+
     # Temperatura del paquete CPU: buscar la zona "x86_pkg_temp"
     temp = _read_package_temp()
 
@@ -386,6 +398,7 @@ def read_cpu_state() -> dict:
         "turbo":         turbo,
         "max_freq_mhz":  max_freq_mhz,
         "rapl_limit_w":  rapl_w,
+        "rapl_pl2_w":    rapl_pl2_w,
         "temp_celsius":  temp,
         "cur_freq_mhz":  cur_freq_mhz,
     }
